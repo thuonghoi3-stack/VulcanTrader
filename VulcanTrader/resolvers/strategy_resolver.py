@@ -12,6 +12,8 @@ from os import walk
 from pathlib import Path
 from typing import Any
 
+import VulcanTrader.freqtrade_compat  # noqa: F401  — freqtrade.* alias for user strategies
+
 from VulcanTrader.config.config_validation import validate_migrated_strategy_settings
 from VulcanTrader.constants import REQUIRED_ORDERTIF, REQUIRED_ORDERTYPES, USERPATH_STRATEGIES, Config
 from VulcanTrader.enums import TradingMode
