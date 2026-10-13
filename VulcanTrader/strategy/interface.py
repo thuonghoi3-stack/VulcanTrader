@@ -162,6 +162,7 @@ class IStrategy(ABC, HyperStrategyMixin):
         self.config = config
         # Dict to determine if analysis is necessary
         self.__last_candle_seen_per_pair: dict[str, datetime] = {}
+        self._candle_book = None
         super().__init__(config)
 
         # Gather informative pairs from @informative-decorated methods.
@@ -184,6 +185,29 @@ class IStrategy(ABC, HyperStrategyMixin):
                 if not informative_data.candle_type:
                     informative_data.candle_type = config["candle_type_def"]
                 self.trader_informative.append((informative_data, cls_method))
+
+    def refresh_candle_book(self, pairs: list[str]):
+        """Rebuild entry counts for this candle. The engine calls this after analyze()."""
+        from VulcanTrader.strategy.candle_book import refresh_candle_book
+
+        self._candle_book = refresh_candle_book(self, pairs)
+        return self._candle_book
+
+    def candle_book(self):
+        """What the engine knows about this candle.
+
+        ``entry_pairs`` / ``entry_long`` / ``entry_short``: whitelist pairs
+        whose latest candle would actually enter.
+        ``open_slots`` / ``open_long`` / ``open_short``: positions open now.
+        ``open_pnl``: sum of their unrealized profit, marked at the last close.
+        ``free_slots``: room left under ``max_open_trades``, or None if uncapped.
+
+        Call this from confirm_trade_entry, custom_stake_amount, custom_exit
+        or adjust_trade_position. Not from populate_entry_trend.
+        """
+        from VulcanTrader.strategy.candle_book import current_candle_book
+
+        return current_candle_book(self)
 
     def load_freqAI_model(self) -> None:
         if self.config.get("freqai", {}).get("enabled", False):

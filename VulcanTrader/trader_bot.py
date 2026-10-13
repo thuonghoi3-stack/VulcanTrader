@@ -1166,6 +1166,11 @@ class VulcanTraderBot(LoggingMixin):
         with self._measure_execution:
             self.strategy.analyze(self.active_pair_whitelist)
 
+        try:
+            self.strategy.refresh_candle_book(self.active_pair_whitelist)
+        except Exception:
+            logger.exception("candle book refresh failed")
+
         with self._exit_lock:
             # Check for exchange cancellations, timeouts and user requested replace
             self.manage_open_orders()

@@ -11,6 +11,7 @@ from VulcanTrader.exchange import (
     timeframe_to_prev_date,
     timeframe_to_seconds,
 )
+from VulcanTrader.strategy.candle_book import CandleBook
 from VulcanTrader.strategy.interface import IStrategy
 from VulcanTrader.strategy.parameters import (
     BaseParameter,
@@ -31,6 +32,7 @@ from VulcanTrader.strategy.informative_decorator import informative
 __all__ = [
     "BaseParameter",
     "BooleanParameter",
+    "CandleBook",
     "CategoricalParameter",
     "DecimalParameter",
     "informative",
