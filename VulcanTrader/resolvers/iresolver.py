@@ -7,6 +7,7 @@ This module load custom objects
 import importlib.util
 import inspect
 import logging
+import re
 import sys
 import threading
 from collections.abc import Iterator
@@ -185,7 +186,11 @@ class IResolver:
         # regardless of which object_name this particular call is after.
         for entry in _cached_candidate_files(directory):
             module_path = entry.resolve()
-            if entry.read_text(encoding="utf-8").find(f"class {object_name}(") == -1:
+            try:
+                text = entry.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if re.search(rf"(?m)^class\s+{re.escape(object_name)}\s*\(", text) is None:
                 logger.debug(f"Skipping {module_path} as it does not contain class {object_name}.")
                 continue
 
@@ -194,6 +199,11 @@ class IResolver:
                 if add_source:
                     obj[0].__source__ = obj[1]
                 return (obj[0], module_path)
+            logger.warning(
+                "Found class %s in %s but it is not a loadable %s. "
+                "Check the import error above, or that it subclasses IStrategy.",
+                object_name, module_path, cls.object_type.__name__,
+            )
         return (None, None)
 
     @classmethod

@@ -3192,6 +3192,9 @@ class WebPortal:
         existing = next((b for b in self._scan_live_bots() if b["name"] == account_name), None)
         if existing and existing.get("running"):
             raise HTTPException(status_code=409, detail=f"Config {name!r}'s bot is already running.")
+        # A failed init keeps the old process, still on the previous strategy.
+        # Stop it and wait until it consumes the stop file before launching.
+        self._stop_stuck_init(account_name)
 
         db_url = f"json:///user_data/accounts/{account_name}.json"
         bot_name = raw.get("bot_name") or strategy
@@ -3241,6 +3244,15 @@ class WebPortal:
             "started": True, "config": name, "strategy": strategy,
             "port": port, "db_url": db_url, "account_name": account_name,
         }
+
+    def _stop_stuck_init(self, account_name: str) -> None:
+        path = self._accounts_dir() / f"{account_name}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        stop = path.with_name(path.name + ".stop")
+        stop.write_text("", encoding="utf-8")
+        deadline = time.time() + 3.0
+        while stop.exists() and time.time() < deadline:
+            time.sleep(0.2)
 
     def _ensure_binance_futures_pricing(self, path: Path, raw: dict) -> dict:
         """Binance futures tickers have no bid/ask, so order-book pricing is required.
