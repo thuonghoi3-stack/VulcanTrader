@@ -18,6 +18,9 @@
     marks: [],
     ind: "",
     whitelist: [],
+    badPairs: {},
+    userBot: false,
+    tfUser: false,
     chartPair: "",
     tf: "1h",
     pane: "chart",
@@ -116,7 +119,7 @@
               <h2>Pair chart <span class="mute" id="chart-note"></span></h2>
               <div class="row">
                 <label class="stack" style="flex:1">Pair<select id="pair" class="field"></select></label>
-                <label class="stack">TF<select id="tf" class="field"><option>15m</option><option selected>1h</option><option>4h</option></select></label>
+                <label class="stack">TF<select id="tf" class="field"><option>5m</option><option>15m</option><option selected>1h</option><option>4h</option></select></label>
                 <label class="stack">Indicator<select id="ind" class="field"><option value="">None</option></select></label>
               </div>
               <div id="chart"></div>
@@ -162,7 +165,7 @@
         </section>
       </section>`;
     $("pair").addEventListener("change", () => { S.chartPair = $("pair").value; S.candles = null; loadCandles(); });
-    $("tf").addEventListener("change", () => { S.tf = $("tf").value; S.candles = null; loadCandles(); });
+    $("tf").addEventListener("change", () => { S.tfUser = true; S.tf = $("tf").value; S.badPairs = {}; S.candles = null; loadCandles().then(renderTrading); });
     $("ind").addEventListener("change", () => { S.ind = $("ind").value; drawCandles(); });
     $("bt-form").addEventListener("submit", onBacktest);
     $("dl-form").addEventListener("submit", onDownload);
@@ -236,9 +239,8 @@
     else if (S.side === "pairs") paint("fleet", pairHtml(closed));
     else paint("fleet", logHtml());
 
-    const pairs = [...new Set([...open, ...closed].map((t) => t.pair).filter(Boolean))];
-    if (!pairs.includes("BTC/USDT")) pairs.unshift("BTC/USDT");
-    if (!S.chartPair) S.chartPair = pairs[0];
+    const pairs = pairChoices();
+    if (!S.chartPair || !pairs.includes(S.chartPair)) S.chartPair = pairs[0] || "";
     const pairEl = $("pair");
     if (pairEl && !pairEl.contains(document.activeElement)) {
       const html = pairs.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
@@ -248,7 +250,11 @@
     const tfEl = $("tf");
     if (tfEl && !tfEl.contains(document.activeElement)) tfEl.value = S.tf;
     const note = $("chart-note");
-    if (note) note.textContent = S.error || (S.candles ? (S.candles.timeframe || S.tf) + " · " + ((S.candles.candles || []).length) + " bars" : "loading");
+    if (note) {
+      const skipped = Object.keys(S.badPairs).filter((k) => k.endsWith("|" + S.tf)).map((k) => k.slice(0, -(S.tf.length + 1)));
+      const base = S.error || (S.candles ? (S.candles.timeframe || S.tf) + " · " + ((S.candles.candles || []).length) + " bars" : "loading");
+      note.textContent = skipped.length ? base + " · no data: " + skipped.slice(0, 4).join(", ") : base;
+    }
     drawEquity(closed);
     paint("book", bookHtml(open, closed));
   }
@@ -322,14 +328,37 @@
     }).join("");
     return line("Best", rows.slice(0, 8)) + line("Worst", rows.slice().reverse().slice(0, 8));
   }
+  function pairChoices() {
+    const ranked = [...new Set([
+      ...openTrades().map((t) => t.pair),
+      ...(S.whitelist || []),
+      ...closedTrades().map((t) => t.pair),
+    ].filter(Boolean))];
+    const good = ranked.filter((p) => !S.badPairs[p + "|" + S.tf]);
+    return good.length ? good : ranked;
+  }
+  function logText(line) {
+    return typeof line === "string" ? line : (line.line || line.message || line.msg || "");
+  }
   function logHtml() {
     const messages = (S.dash && S.dash.messages) || [];
     const logs = (S.dash && S.dash.logs) || [];
-    const lines = messages.length ? messages : logs;
-    if (!lines.length) return `<p class="mute">No messages yet.</p>`;
-    return `<div class="log">${lines.slice(-40).reverse().map((line) => {
-      const text = typeof line === "string" ? line : (line.message || line.msg || JSON.stringify(line));
-      return `<p><span class="mute">${esc(line.date || line.time || "")}</span><br>${esc(text)}</p>`;
+    const lines = logs.length ? logs : messages;
+    if (!lines.length) return `<p class="mute">No log lines yet.</p>`;
+    const seen = new Set();
+    const important = [];
+    lines.forEach((line) => {
+      const text = logText(line);
+      if (/BadSymbol|Empty candle|ERROR/.test(text) && !seen.has(text)) {
+        seen.add(text);
+        important.push(line);
+      }
+    });
+    const recent = lines.slice(-24).filter((line) => !important.includes(line));
+    return `<div class="log">${[...important.slice(-6), ...recent].slice(-32).reverse().map((line) => {
+      const text = logText(line);
+      const tone = /BadSymbol|ERROR/.test(text) ? "neg" : /WARNING|Empty candle|No history/.test(text) ? "neu" : "";
+      return `<p class="${tone}">${esc(text)}</p>`;
     }).join("")}</div>`;
   }
   function bookHtml(open, closed) {
@@ -476,27 +505,53 @@
     S.strategies = strats.strategies || [];
     S.examples = examples.examples || [];
   }
+  function ensureBot() {
+    const known = S.configs.some((c) => c.account_name === S.bot);
+    if (S.bot && known) return;
+    if (S.userBot && !S.bot) return;
+    const running = S.configs.find((c) => c.running);
+    const next = (running || S.configs[0] || {}).account_name || "";
+    if (next !== S.bot) {
+      S.bot = next;
+      S.candles = null;
+      S.badPairs = {};
+    }
+  }
   async function loadDash() {
     S.dash = await api("/api/dashboard" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
     try {
       const wl = await api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
       S.whitelist = wl.whitelist || [];
     } catch (err) { S.whitelist = []; }
+    if (S.bot && !S.tfUser && S.tfBot !== S.bot) {
+      S.tfBot = S.bot;
+      try {
+        const info = await api("/api/strategy/info?bot=" + encodeURIComponent(S.bot));
+        const has = [...$("tf").options].some((o) => o.value === info.timeframe);
+        if (has && S.tf !== info.timeframe) { S.tf = info.timeframe; S.candles = null; S.badPairs = {}; }
+      } catch (err) { /* keep the selected timeframe */ }
+    }
   }
   async function loadCandles() {
-    if (!S.chartPair) return;
-    const q = `?pair=${encodeURIComponent(S.chartPair)}&timeframe=${encodeURIComponent(S.tf)}&limit=200` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
-    try {
-      S.candles = await api("/api/pair/candles" + q);
-      S.error = "";
-    } catch (err) {
-      S.candles = { candles: [], timeframe: S.tf };
-      S.error = err.message;
+    const choices = pairChoices();
+    if (!S.chartPair || !choices.includes(S.chartPair)) S.chartPair = choices[0] || S.chartPair;
+    const queue = [...new Set([S.chartPair, ...choices])].filter(Boolean).slice(0, 6);
+    S.error = queue.length ? "" : "No pair to chart";
+    S.candles = S.candles || { candles: [], timeframe: S.tf };
+    for (const pair of queue) {
+      const q = `?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(S.tf)}&limit=200` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
+      try {
+        S.candles = await api("/api/pair/candles" + q);
+        S.chartPair = pair;
+        S.error = "";
+        break;
+      } catch (err) {
+        S.badPairs[pair + "|" + S.tf] = true;
+        S.candles = { candles: [], timeframe: S.tf, indicators: [] };
+        S.error = err.message;
+      }
     }
-    try {
-      const body = await api("/api/pair/trades?pair=" + encodeURIComponent(S.chartPair));
-      S.marks = body.trades || [];
-    } catch (err) { S.marks = []; }
+    S.marks = [...openTrades(), ...closedTrades()].filter((t) => t.pair === S.chartPair);
     drawCandles();
   }
   async function loadJobs() {
@@ -520,6 +575,7 @@
     try {
       await loadMeta();
       if (S.view === "trading") {
+        ensureBot();
         await loadDash();
         if (!S.candles) await loadCandles();
         renderTrading();
@@ -560,7 +616,7 @@
       else if (act === "pane") { S.pane = id; renderTrading(); }
       else if (act === "pick-pair") { S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
-      else if (act === "view-bot") { S.bot = S.bot === id ? "" : id; S.candles = null; await refresh(); await loadCandles(); }
+      else if (act === "view-bot") { S.userBot = true; S.bot = S.bot === id ? "" : id; S.tfBot = ""; S.candles = null; S.badPairs = {}; await refresh(); }
       else if (act === "start") {
         if (el.dataset.live === "1" && !window.confirm("Start LIVE " + id + "? This config can send real orders.")) return;
         await api("/api/configs/" + encodeURIComponent(id) + "/start", { method: "POST" });
@@ -719,7 +775,7 @@
     }).format(new Date()) + " ICT";
   }
   $("logout").onclick = () => { localStorage.removeItem("VulcanTrader_token"); location.href = "/login"; };
-  $("refresh").onclick = () => { S.candles = null; S.coverage = null; refresh(); };
+  $("refresh").onclick = () => { S.candles = null; S.badPairs = {}; S.coverage = null; refresh(); };
   document.addEventListener("click", onClick);
   window.addEventListener("hashchange", () => { viewFromHash(); showView(); refresh(); });
   viewFromHash();

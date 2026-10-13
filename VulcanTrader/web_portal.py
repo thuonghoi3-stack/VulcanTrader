@@ -965,7 +965,11 @@ class WebPortal:
             }
 
         @app.get("/api/whitelist", dependencies=[Depends(auth)])
-        def api_whitelist() -> dict:
+        def api_whitelist(bot: str | None = None) -> dict:
+            if bot:
+                cfg = self._config_for_account(bot) or {}
+                wl = list(((cfg.get("exchange") or {}).get("pair_whitelist")) or [])
+                return {"whitelist": wl}
             wl: list[str] = []
             if self.bot is not None:
                 try:
@@ -989,7 +993,17 @@ class WebPortal:
             return self._pair_candles(pair, timeframe, limit, bot)
 
         @app.get("/api/pair/trades", dependencies=[Depends(auth)])
-        def api_pair_trades(pair: str) -> dict:
+        def api_pair_trades(pair: str, bot: str | None = None) -> dict:
+            if bot:
+                path = self._find_account_db(bot)
+                if path is None:
+                    raise HTTPException(status_code=404, detail=f"No account database named {bot!r}")
+                try:
+                    data = json.loads(path.read_text(encoding="utf-8") or "{}")
+                except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+                    raise HTTPException(status_code=502, detail=f"Account DB unreadable: {exc}") from exc
+                trades = [t for t in (data.get("trades") or []) if t.get("pair") == pair]
+                return {"trades": [_json_safe(t) for t in trades]}
             return {"trades": self._pair_trades(pair)}
 
         # --------------- backtest results ---------------
@@ -1580,7 +1594,7 @@ class WebPortal:
             "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
             # Another process's notifications/log stream isn't visible from here.
             "messages": [],
-            "logs": [],
+            "logs": _tail_log_file(_find_latest_log_file(), 200),
         }
 
     def _get_pair_locks(self) -> list:
