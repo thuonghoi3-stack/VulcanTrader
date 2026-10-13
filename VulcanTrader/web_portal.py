@@ -1580,12 +1580,6 @@ class WebPortal:
             "starting_capital": self._starting_capital_for_account(name, info["mode"] != "live"),
         }
         open_trade_list = [t for t in trades if t.get("is_open")]
-        by_exchange: dict[str, list[str]] = {}
-        for t in open_trade_list:
-            exch = t.get("exchange")
-            if exch and t.get("pair"):
-                by_exchange.setdefault(exch, []).append(t["pair"])
-        self._warm_tickers_later(by_exchange)
 
         return {
             "status": status,
@@ -2724,25 +2718,55 @@ class WebPortal:
         finally:
             executor.shutdown(wait=False)
 
-    def _warm_tickers_later(self, by_exchange: dict[str, list[str]]) -> None:
-        """Fill the price cache off the request thread.
-
-        Doing this inline made switching bots wait on the exchange (several
-        seconds, sometimes one timeout per open pair). The dashboard returns
-        the stored profit immediately and picks up cached prices next poll.
-        """
-        if not by_exchange or getattr(self, "_ticker_warm_busy", False):
-            return
-        self._ticker_warm_busy = True
-
-        def run() -> None:
+    def _data_server_addr(self) -> tuple[str, int]:
+        host, port = "127.0.0.1", 8720
+        try:
+            raw = json.loads((self._user_data_dir() / "system.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+            raw = {}
+        if isinstance(raw, dict):
+            host = str(raw.get("data_server_ip") or host)
             try:
-                for exch, pairs in by_exchange.items():
-                    self._prefetch_tickers_ccxt_public(exch, pairs)
-            finally:
-                self._ticker_warm_busy = False
+                port = int(raw.get("data_server_port") or port)
+            except (TypeError, ValueError):
+                port = 8720
+        return host, port
 
-        threading.Thread(target=run, name="ticker-warm", daemon=True).start()
+    def _price_from_data_server(self, exchange: str | None, pair: str) -> float | None:
+        """Read a ticker the data_server master already cached.
+
+        One short local socket, never an exchange call. A miss or a slow
+        master returns None and the trade keeps the profit stored on disk.
+        """
+        if not exchange or not pair:
+            return None
+        key = f"ds:{exchange}:{pair}"
+        now = time.time()
+        cached = self._ticker_cache.get(key)
+        if cached is not None and now - cached[0] < self.TICKER_CACHE_TTL:
+            return cached[1]
+        host, port = self._data_server_addr()
+        try:
+            import socket
+            from VulcanTrader.data_server import recv_msg, send_msg
+            sock = socket.create_connection((host, port), timeout=0.4)
+            try:
+                sock.settimeout(0.4)
+                send_msg(sock, {"type": "get_ticker", "exchange": exchange, "pair": pair})
+                resp = recv_msg(sock)
+            finally:
+                sock.close()
+        except Exception:
+            logger.debug("data_server ticker unavailable for %s %s", exchange, pair, exc_info=True)
+            return cached[1] if cached else None
+        ticker = resp.get("ticker") if isinstance(resp, dict) else None
+        raw_price = ticker.get("last") or ticker.get("close") or ticker.get("bid") if isinstance(ticker, dict) else None
+        try:
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            return cached[1] if cached else None
+        self._ticker_cache[key] = (now, price)
+        return price
 
     def _current_price_ccxt_public(self, exchange_name: str, pair: str, allow_fetch: bool = True) -> float | None:
         """Cached, keyless ticker read via a plain ccxt client - used only
@@ -2820,6 +2844,8 @@ class WebPortal:
                 logger.debug("live exchange ticker fetch failed for %s", pair, exc_info=True)
         if not exchange_name:
             return None
+        if not network:
+            return self._price_from_data_server(exchange_name, pair)
         return self._current_price_ccxt_public(exchange_name, pair, allow_fetch=network)
 
     def _attach_live_pnl(self, trade: dict, *, network: bool = True) -> dict:
