@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VulcanTrader</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/desk.css">
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="/trading">VulcanTrader <span id="ver"></span></a>
+    <nav class="nav" id="nav"></nav>
+    <div class="top-meta">
+      <span id="clock"></span>
+      <button type="button" id="refresh" class="btn">Refresh</button>
+      <button type="button" id="logout" class="btn">Log out</button>
+    </div>
+  </header>
+  <p id="banner" class="banner"></p>
+  <main id="app" class="app"></main>
+  <nav class="dock" id="dock"></nav>
+  <div id="modal" hidden></div>
+  <div id="toast" role="status"></div>
+  <script src="/static/desk.js"></script>
+</body>
+</html>

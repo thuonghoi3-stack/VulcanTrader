@@ -711,6 +711,18 @@ class WebPortal:
 
         @app.get("/trading", include_in_schema=False)
         def trading_page() -> Any:
+            # New desk (template/desk.html) is the default. The previous Alpine
+            # page stays available at /trading-classic if desk.html is missing
+            # or the operator wants the old layout.
+            f = TEMPLATE_DIR / "desk.html"
+            if not f.is_file():
+                f = TEMPLATE_DIR / "trading.html"
+            if f.is_file():
+                return FileResponse(f, headers=_no_cache_headers)
+            return JSONResponse({"detail": "trading.html not found"}, status_code=404)
+
+        @app.get("/trading-classic", include_in_schema=False)
+        def trading_classic_page() -> Any:
             f = TEMPLATE_DIR / "trading.html"
             if f.is_file():
                 return FileResponse(f, headers=_no_cache_headers)
