@@ -113,6 +113,7 @@
     $("app").innerHTML = `
       <section id="view-trading">
         <div class="grid-4" id="pulses"></div>
+        <div id="session"></div>
         <div class="seg row phone-only" id="pane"></div>
         <div class="split">
           <section class="card pane-fleet">
@@ -244,6 +245,7 @@
     paint("side", sides.map(([id, label]) => `<button type="button" data-act="side" data-id="${id}" class="${S.side === id ? "on" : ""}">${label}</button>`).join(""));
     paint("pane", ["fleet", "chart", "book"].map((id) => `<button type="button" data-act="pane" data-id="${id}" class="${S.pane === id ? "on" : ""}">${id[0].toUpperCase() + id.slice(1)}</button>`).join(""));
     document.body.dataset.pane = S.pane;
+    paint("session", sessionHtml());
 
     if (S.side === "bots") paint("fleet", botList());
     else if (S.side === "metrics") paint("fleet", metricsHtml(closed, pnl, maxDd));
@@ -274,6 +276,40 @@
     paint("book", hint + bookHtml(open, closed));
   }
 
+  function ictDate(raw) {
+    const d = raw ? new Date(raw) : new Date();
+    if (Number.isNaN(d.getTime())) return String(raw || "").slice(0, 10);
+    return new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh", year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  }
+  function heldFor(t) {
+    const open = t.open_date ? new Date(t.open_date) : null;
+    if (!open || Number.isNaN(open.getTime())) return "";
+    const end = t.close_date ? new Date(t.close_date) : new Date();
+    const min = Math.max(0, (end - open) / 60000);
+    if (min < 60) return Math.round(min) + "m";
+    const h = Math.floor(min / 60);
+    if (h < 48) return h + "h " + Math.round(min % 60) + "m";
+    return Math.floor(h / 24) + "d " + (h % 24) + "h";
+  }
+  function sessionHtml() {
+    const st = (S.dash && S.dash.status) || {};
+    const cfg = S.configs.find((c) => c.account_name === S.bot);
+    const today = ictDate();
+    const dayClosed = closedTrades().filter((t) => ictDate(t.close_date) === today);
+    const dayPnl = dayClosed.reduce((s, t) => s + profitAbs(t), 0);
+    const unreal = openTrades().reduce((s, t) => s + profitAbs(t), 0);
+    const name = cfg ? cfg.name : (st.bot_name || "Fleet");
+    const live = st.dry_run === false || (cfg && cfg.dry_run === false);
+    const state = st.state || (cfg && cfg.running ? "RUNNING" : "STOPPED");
+    const up = Math.max(0, Math.floor(Number(st.uptime_secs) || 0));
+    const upText = up ? (Math.floor(up / 3600) ? Math.floor(up / 3600) + "h " + Math.floor((up % 3600) / 60) + "m" : Math.floor(up / 60) + "m") : "";
+    return `<div class="session">
+      <div><b>${esc(name)}</b><div class="mute">${esc(state)}${upText ? " · " + upText : ""} · ${esc(st.strategy || (cfg && cfg.strategy) || "no strategy")}</div></div>
+      <div class="${live ? "neg" : "mute"}">${live ? "LIVE" : "Paper"}</div>
+      <div><span class="mute">Hôm nay</span><div class="${cls(dayPnl)}"><b>${money(dayPnl)}</b></div><div class="mute">${dayClosed.length} đóng</div></div>
+      <div><span class="mute">Đang mở</span><div class="${cls(unreal)}"><b>${money(unreal)}</b></div><div class="mute">${openTrades().length} lệnh</div></div>
+    </div>`;
+  }
   function markFleet() {
     const root = $("fleet");
     if (!root) return;
@@ -337,16 +373,23 @@
     return `<div class="grid-2">${cells.map(([k, v]) => `<div class="pulse"><span>${k}</span><b class="${cls(String(v).includes("−") ? -1 : 1)}">${esc(v)}</b></div>`).join("")}</div>`;
   }
   function periodHtml(closed) {
-    const buckets = new Map();
+    const months = new Map();
+    const days = new Map();
     closed.forEach((t) => {
-      const key = String(t.close_date || "").slice(0, 7) || "—";
-      const row = buckets.get(key) || { n: 0, pnl: 0, wins: 0 };
-      row.n += 1; row.pnl += profitAbs(t); if (profitAbs(t) > 0) row.wins += 1;
-      buckets.set(key, row);
+      const month = String(t.close_date || "").slice(0, 7) || "—";
+      const day = ictDate(t.close_date) || "—";
+      const add = (map, key) => {
+        const row = map.get(key) || { n: 0, pnl: 0, wins: 0 };
+        row.n += 1; row.pnl += profitAbs(t); if (profitAbs(t) > 0) row.wins += 1;
+        map.set(key, row);
+      };
+      add(months, month);
+      add(days, day);
     });
-    const rows = [...buckets.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 8);
-    if (!rows.length) return `<p class="mute">No closed trades yet.</p>`;
-    return rows.map(([key, row]) => `<div class="bot"><b>${esc(key)}</b><div class="mute">${row.n} trades · win ${row.n ? Math.round((row.wins / row.n) * 100) : 0}%</div><div class="${cls(row.pnl)}">${money(row.pnl)}</div></div>`).join("");
+    const block = (title, rows) => `<h3>${title}</h3>` + (rows.length ? rows.map(([key, row]) => `<div class="bot"><b>${esc(key)}</b><div class="mute">${row.n} trades · win ${row.n ? Math.round((row.wins / row.n) * 100) : 0}%</div><div class="${cls(row.pnl)}">${money(row.pnl)}</div></div>`).join("") : `<p class="mute">No closed trades yet.</p>`);
+    const dayRows = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7);
+    const monthRows = [...months.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 8);
+    return block("7 ngày (ICT)", dayRows) + block("Tháng", monthRows);
   }
   function pairHtml(closed) {
     const buckets = new Map();
@@ -403,17 +446,21 @@
       const exit = isOpen
         ? `<button type="button" class="btn" data-act="force" data-pair="${esc(t.pair)}">Force exit</button>`
         : esc(t.exit_reason || "");
+      const meta = [heldFor(t), t.enter_tag, t.stake_amount ? "$" + Number(t.stake_amount).toLocaleString("en-US", { maximumFractionDigits: 0 }) : ""].filter(Boolean).join(" · ");
       return `<article class="bot">
         <button type="button" data-act="pick-pair" data-id="${esc(t.pair)}" style="background:none;border:0;padding:0;color:inherit;text-align:left">
           <b>${esc(t.pair)}</b> <span class="${t.is_short ? "neg" : "pos"}">${t.is_short ? "SHORT" : "LONG"}</span>
         </button>
         <div class="${cls(profitAbs(t))}">${money(profitAbs(t))} · ${pct(profitPct(t))}</div>
+        ${meta ? `<div class="mute">${esc(meta)}</div>` : ""}
         ${x ? `<div class="mute">MAE ${x.mae.toFixed(2)}% · MFE ${x.mfe.toFixed(2)}%</div><div class="mute">Entry</div>${bar(x.entry)}${x.exit == null ? "" : `<div class="mute">Exit</div>${bar(x.exit)}`}` : ""}
-        <div class="row">${exit}</div>
+        <div class="row">${exit}<button type="button" class="btn" data-act="trade" data-pair="${esc(t.pair)}" data-open="${esc(t.open_date || "")}">Detail</button></div>
       </article>`;
     };
-    return `<h2>Open (${open.length})</h2>${open.length ? open.slice(0, 40).map((t) => row(t, true)).join("") : `<p class="mute">No open trades.</p>`}
-      <h2>Closed (${closed.length})</h2>${closed.length ? closed.slice(0, 40).map((t) => row(t, false)).join("") : `<p class="mute">No closed trades.</p>`}`;
+    const openSorted = [...open].sort((a, b) => profitAbs(a) - profitAbs(b));
+    const closedSorted = [...closed].sort((a, b) => String(b.close_date || "").localeCompare(String(a.close_date || "")));
+    return `<h2>Open (${open.length})</h2>${openSorted.length ? openSorted.slice(0, 40).map((t) => row(t, true)).join("") : `<p class="mute">No open trades.</p>`}
+      <h2>Closed (${closed.length})</h2>${closedSorted.length ? closedSorted.slice(0, 40).map((t) => row(t, false)).join("") : `<p class="mute">No closed trades.</p>`}`;
   }
   function drawEquity(closed) {
     const svg = $("equity");
@@ -704,7 +751,27 @@
         renderTrading();
         if (id === "chart") ensureChart();
       }
-      else if (act === "pick-pair") { S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
+      else if (act === "pick-pair") { closeModal(); S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
+      else if (act === "trade") {
+        const t = [...openTrades(), ...closedTrades()].find((x) => x.pair === el.dataset.pair && String(x.open_date || "") === el.dataset.open);
+        if (!t) return;
+        const lines = [
+          ["Side", t.is_short ? "SHORT" : "LONG"],
+          ["Open rate", t.open_rate],
+          ["Current", t.current_rate || t.close_rate || "—"],
+          ["Stake", t.stake_amount || "—"],
+          ["Leverage", (Number(t.leverage) || 1) + "x"],
+          ["PnL", money(profitAbs(t)) + "  " + pct(profitPct(t))],
+          ["Held", heldFor(t) || "—"],
+          ["Stop", t.stop_loss_abs || t.initial_stop_loss_abs || "—"],
+          ["Tag", t.enter_tag || "—"],
+          ["Exit", t.exit_reason || "—"],
+          ["Opened", t.open_date || "—"],
+          ["Closed", t.close_date || "—"],
+        ];
+        modal(t.pair, lines.map(([k, v]) => `<div class="row" style="justify-content:space-between"><span class="mute">${esc(k)}</span><b>${esc(v)}</b></div>`).join("")
+          + `<div class="row"><button type="button" class="btn" data-act="pick-pair" data-id="${esc(t.pair)}">Chart</button>${t.is_open ? `<button type="button" class="btn" data-act="force" data-pair="${esc(t.pair)}">Force exit</button>` : ""}</div>`);
+      }
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
       else if (act === "view-bot") {
         S.userBot = true;
@@ -733,6 +800,7 @@
         if (!S.bot) { toast("Select the bot that owns this trade first"); return; }
         if (!window.confirm("Force exit " + el.dataset.pair + " on " + S.bot + "?")) return;
         await api("/api/livebots/" + encodeURIComponent(S.bot) + "/forceexit?pair=" + encodeURIComponent(el.dataset.pair), { method: "POST" });
+        closeModal();
         toast("Exit requested");
         setTimeout(refresh, 1500);
       } else if (act === "delete") {
