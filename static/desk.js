@@ -16,6 +16,8 @@
     dash: null,
     candles: null,
     marks: [],
+    ind: "",
+    whitelist: [],
     chartPair: "",
     tf: "1h",
     pane: "chart",
@@ -115,10 +117,12 @@
               <div class="row">
                 <label class="stack" style="flex:1">Pair<select id="pair" class="field"></select></label>
                 <label class="stack">TF<select id="tf" class="field"><option>15m</option><option selected>1h</option><option>4h</option></select></label>
+                <label class="stack">Indicator<select id="ind" class="field"><option value="">None</option></select></label>
               </div>
               <div id="chart"></div>
               <svg id="equity" viewBox="0 0 280 78" class="equity" hidden></svg>
               <p id="equity-note" class="mute"></p>
+              <p id="whitelist" class="mute"></p>
             </section>
             <section class="card pane-book" id="book"></section>
           </div>
@@ -159,6 +163,7 @@
       </section>`;
     $("pair").addEventListener("change", () => { S.chartPair = $("pair").value; S.candles = null; loadCandles(); });
     $("tf").addEventListener("change", () => { S.tf = $("tf").value; S.candles = null; loadCandles(); });
+    $("ind").addEventListener("change", () => { S.ind = $("ind").value; drawCandles(); });
     $("bt-form").addEventListener("submit", onBacktest);
     $("dl-form").addEventListener("submit", onDownload);
     $("cov-exchange").addEventListener("change", () => { S.exchange = $("cov-exchange").value; S.coverage = null; loadCoverage().then(renderData); });
@@ -360,16 +365,19 @@
     note.textContent = "Closed equity · max DD " + money(-maxDd);
   }
 
-  let chart, series;
+  let chart, series, indSeries;
+  function candleTime(raw) {
+    const ms = typeof raw === "number" ? (raw > 1e12 ? raw : raw * 1000) : Date.parse(raw);
+    return Number.isFinite(ms) ? Math.floor(ms / 1000) : null;
+  }
   function drawCandles() {
     const rows = (S.candles && S.candles.candles) || [];
     const el = $("chart");
     if (!el || !window.LightweightCharts) return;
     const data = rows.map((c) => {
-      const raw = c.date || c.time || c[0];
-      const ms = typeof raw === "number" ? (raw > 1e12 ? raw : raw * 1000) : Date.parse(raw);
-      if (!Number.isFinite(ms)) return null;
-      return { time: Math.floor(ms / 1000), open: Number(c.open ?? c[1]), high: Number(c.high ?? c[2]), low: Number(c.low ?? c[3]), close: Number(c.close ?? c[4]) };
+      const time = candleTime(c.date || c.time || c[0]);
+      if (time == null) return null;
+      return { time, open: Number(c.open ?? c[1]), high: Number(c.high ?? c[2]), low: Number(c.low ?? c[3]), close: Number(c.close ?? c[4]), raw: c };
     }).filter(Boolean).sort((a, b) => a.time - b.time);
     const dedup = [];
     data.forEach((barRow) => {
@@ -386,13 +394,42 @@
       series = chart.addCandlestickSeries({ upColor: "#3f8f62", downColor: "#a33b32", borderVisible: false, wickUpColor: "#3f8f62", wickDownColor: "#a33b32" });
       new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
     }
-    series.setData(dedup);
-    const markers = (S.marks || []).map((t) => {
-      const ms = Date.parse(t.open_date || "");
-      if (!Number.isFinite(ms)) return null;
-      return { time: Math.floor(ms / 1000), position: t.is_short ? "aboveBar" : "belowBar", color: t.is_short ? "#a33b32" : "#3f8f62", shape: t.is_short ? "arrowDown" : "arrowUp", text: t.is_short ? "S" : "L" };
-    }).filter(Boolean).sort((a, b) => a.time - b.time);
-    series.setMarkers(markers);
+    series.setData(dedup.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
+    const markers = [];
+    (S.marks || []).forEach((t) => {
+      const openAt = candleTime(t.open_date);
+      if (openAt != null) markers.push({ time: openAt, position: t.is_short ? "aboveBar" : "belowBar", color: t.is_short ? "#a33b32" : "#3f8f62", shape: t.is_short ? "arrowDown" : "arrowUp", text: t.is_short ? "S" : "L" });
+      const closeAt = candleTime(t.close_date);
+      if (closeAt != null) markers.push({ time: closeAt, position: "aboveBar", color: "#c4a15a", shape: "circle", text: "X" });
+    });
+    markers.sort((a, b) => a.time - b.time || (a.text === "X" ? 1 : -1));
+    const uniq = [];
+    markers.forEach((m) => {
+      const prev = uniq[uniq.length - 1];
+      if (prev && prev.time === m.time && prev.text === m.text) return;
+      uniq.push(m);
+    });
+    series.setMarkers(uniq);
+    const names = (S.candles && S.candles.indicators) || [];
+    const sel = $("ind");
+    if (sel && !sel.contains(document.activeElement)) {
+      const html = `<option value="">None</option>` + names.slice(0, 30).map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("");
+      if (sel.dataset.html !== html) { sel.dataset.html = html; sel.innerHTML = html; }
+      if (![""].concat(names).includes(S.ind)) S.ind = "";
+      sel.value = S.ind;
+    }
+    if (indSeries) { chart.removeSeries(indSeries); indSeries = null; }
+    if (S.ind) {
+      const line = dedup.map((barRow) => {
+        const v = Number(barRow.raw[S.ind]);
+        return Number.isFinite(v) ? { time: barRow.time, value: v } : null;
+      }).filter(Boolean);
+      indSeries = chart.addLineSeries({ color: "#6f8f86", lineWidth: 2, priceScaleId: "ind", title: S.ind });
+      chart.priceScale("ind").applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+      indSeries.setData(line);
+    }
+    const wl = $("whitelist");
+    if (wl) wl.textContent = S.whitelist.length ? "Whitelist " + S.whitelist.slice(0, 8).join(", ") + (S.whitelist.length > 8 ? " +" + (S.whitelist.length - 8) : "") : "";
   }
 
   function fillSelect(id, rows, valueKey) {
@@ -441,6 +478,10 @@
   }
   async function loadDash() {
     S.dash = await api("/api/dashboard" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
+    try {
+      const wl = await api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
+      S.whitelist = wl.whitelist || [];
+    } catch (err) { S.whitelist = []; }
   }
   async function loadCandles() {
     if (!S.chartPair) return;
@@ -585,9 +626,25 @@
         await loadJobs();
         renderBacktest();
       } else if (act === "result") {
-        const mae = await api("/api/backtests/" + encodeURIComponent(id) + "/mae_mfe");
+        const [mae, regime] = await Promise.all([
+          api("/api/backtests/" + encodeURIComponent(id) + "/mae_mfe"),
+          api("/api/backtests/" + encodeURIComponent(id) + "/regime_analysis").catch((err) => ({ error: err.message })),
+        ]);
         const g = mae.global || {};
-        const regimes = Object.entries(mae.per_regime || {}).slice(0, 6).map(([name, row]) => `<div class="bot"><b>${esc(name)}</b><div class="mute">${row.total || row.n || ""} trades</div></div>`).join("");
+        const metrics = (regime && regime.per_regime_metrics) || {};
+        const regimeHtml = Object.keys(metrics).length && !regime.error
+          ? Object.entries(metrics).filter(([, row]) => row.trades).map(([name, row]) => `<div class="bot"><b>${esc(name)}</b><div class="mute">${row.trades || 0} trades · win ${Number(row.win_rate || 0).toFixed(1)}% · PF ${row.profit_factor == null ? "∞" : Number(row.profit_factor).toFixed(2)}</div><div class="${cls(row.total_pnl || 0)}">PnL ${money(row.total_pnl || 0)} · Sharpe ${Number(row.sharpe || 0).toFixed(2)} · E[R] ${Number(row.expectancy_r || 0).toFixed(3)}</div></div>`).join("")
+          : `<p class="mute">${esc((regime && regime.error) || "Regime needs downloaded candles for the traded pairs.")}</p>`;
+        const eq = (regime && regime.equity_series) || [];
+        let spark = "";
+        if (eq.length > 2) {
+          const vals = eq.map((p) => Number(p.equity)).filter((n) => Number.isFinite(n));
+          const min = Math.min(...vals);
+          const max = Math.max(...vals);
+          const span = max - min || 1;
+          const points = vals.map((v, i) => ((i / (vals.length - 1)) * 280).toFixed(1) + "," + (70 - ((v - min) / span) * 64).toFixed(1)).join(" ");
+          spark = `<svg class="equity" viewBox="0 0 280 78"><polyline fill="none" stroke="#e7a15a" stroke-width="2" points="${points}"/></svg>`;
+        }
         S.resultHtml = `<div class="grid-2">
           <div class="pulse"><span>Trades</span><b>${esc(g.total)}</b></div>
           <div class="pulse"><span>Wins</span><b>${esc(g.win_count)}</b></div>
@@ -595,7 +652,7 @@
           <div class="pulse"><span>MFE median</span><b>${esc(g.mfe_median)}%</b></div>
           <div class="pulse"><span>Suggested SL</span><b>${esc(mae.recommended_sl)}</b></div>
           <div class="pulse"><span>Method</span><b>${esc(mae.method)}</b></div>
-        </div>${regimes}`;
+        </div><h3>Regime</h3>${spark}${regimeHtml}`;
         renderBacktest();
       } else if (act === "close" && event.target === el) closeModal();
     } catch (err) { toast(err.message || "Action failed"); }
