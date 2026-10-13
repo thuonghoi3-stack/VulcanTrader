@@ -1580,10 +1580,25 @@ class WebPortal:
             "starting_capital": self._starting_capital_for_account(name, info["mode"] != "live"),
         }
         open_trade_list = [t for t in trades if t.get("is_open")]
+        prices: dict[str, float] = {}
+        by_exchange: dict[str, list[str]] = {}
+        for t in open_trade_list:
+            exch = t.get("exchange") or status.get("exchange")
+            if exch and t.get("pair"):
+                by_exchange.setdefault(exch, []).append(t["pair"])
+        for exch, pairs in by_exchange.items():
+            prices.update(self._prices_from_data_server(exch, pairs))
+
+        def _priced(t: dict) -> dict:
+            safe = _json_safe(t)
+            px = prices.get(safe.get("pair") or "")
+            if px is None:
+                return safe
+            return self._attach_live_pnl(safe, network=False, price=px)
 
         return {
             "status": status,
-            "open_trades": [self._attach_live_pnl(_json_safe(t), network=False) for t in open_trade_list],
+            "open_trades": [_priced(t) for t in open_trade_list],
             "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
             "messages": [],
             "logs": _tail_log_file(_find_latest_log_file(), 80),
@@ -2732,41 +2747,57 @@ class WebPortal:
                 port = 8720
         return host, port
 
-    def _price_from_data_server(self, exchange: str | None, pair: str) -> float | None:
-        """Read a ticker the data_server master already cached.
+    def _prices_from_data_server(self, exchange: str | None, pairs: list[str]) -> dict[str, float]:
+        """Read tickers the data_server master already cached.
 
-        One short local socket, never an exchange call. A miss or a slow
-        master returns None and the trade keeps the profit stored on disk.
+        One local socket and one time budget for every open pair, same idea
+        as the old bot path that prefers data_server over its own exchange
+        call. A cold cache or a down master returns whatever was already
+        cached here and does not call the exchange.
         """
-        if not exchange or not pair:
-            return None
-        key = f"ds:{exchange}:{pair}"
+        if not exchange:
+            return {}
         now = time.time()
-        cached = self._ticker_cache.get(key)
-        if cached is not None and now - cached[0] < self.TICKER_CACHE_TTL:
-            return cached[1]
+        out: dict[str, float] = {}
+        missing: list[str] = []
+        for pair in dict.fromkeys(p for p in pairs if p):
+            cached = self._ticker_cache.get(f"ds:{exchange}:{pair}")
+            if cached is not None and now - cached[0] < self.TICKER_CACHE_TTL:
+                out[pair] = cached[1]
+            else:
+                missing.append(pair)
+        if not missing:
+            return out
         host, port = self._data_server_addr()
         try:
             import socket
             from VulcanTrader.data_server import recv_msg, send_msg
             sock = socket.create_connection((host, port), timeout=0.4)
             try:
-                sock.settimeout(0.4)
-                send_msg(sock, {"type": "get_ticker", "exchange": exchange, "pair": pair})
-                resp = recv_msg(sock)
+                deadline = time.time() + 0.4
+                for pair in missing:
+                    send_msg(sock, {"type": "get_ticker", "exchange": exchange, "pair": pair})
+                for pair in missing:
+                    left = deadline - time.time()
+                    if left <= 0:
+                        break
+                    sock.settimeout(left)
+                    resp = recv_msg(sock)
+                    ticker = resp.get("ticker") if isinstance(resp, dict) else None
+                    raw_price = None
+                    if isinstance(ticker, dict):
+                        raw_price = ticker.get("last") or ticker.get("close") or ticker.get("bid")
+                    try:
+                        price = float(raw_price)
+                    except (TypeError, ValueError):
+                        continue
+                    self._ticker_cache[f"ds:{exchange}:{pair}"] = (now, price)
+                    out[pair] = price
             finally:
                 sock.close()
         except Exception:
-            logger.debug("data_server ticker unavailable for %s %s", exchange, pair, exc_info=True)
-            return cached[1] if cached else None
-        ticker = resp.get("ticker") if isinstance(resp, dict) else None
-        raw_price = ticker.get("last") or ticker.get("close") or ticker.get("bid") if isinstance(ticker, dict) else None
-        try:
-            price = float(raw_price)
-        except (TypeError, ValueError):
-            return cached[1] if cached else None
-        self._ticker_cache[key] = (now, price)
-        return price
+            logger.debug("data_server tickers unavailable for %s", exchange, exc_info=True)
+        return out
 
     def _current_price_ccxt_public(self, exchange_name: str, pair: str, allow_fetch: bool = True) -> float | None:
         """Cached, keyless ticker read via a plain ccxt client - used only
@@ -2842,13 +2873,11 @@ class WebPortal:
                         return float(price)
             except Exception:
                 logger.debug("live exchange ticker fetch failed for %s", pair, exc_info=True)
-        if not exchange_name:
+        if not exchange_name or not network:
             return None
-        if not network:
-            return self._price_from_data_server(exchange_name, pair)
-        return self._current_price_ccxt_public(exchange_name, pair, allow_fetch=network)
+        return self._current_price_ccxt_public(exchange_name, pair, allow_fetch=True)
 
-    def _attach_live_pnl(self, trade: dict, *, network: bool = True) -> dict:
+    def _attach_live_pnl(self, trade: dict, *, network: bool = True, price: float | None = None) -> dict:
         """Overwrite an OPEN trade dict's profit_abs/profit_ratio with a
         live mark-to-market computed from a fresh ticker, and attach
         current_rate - both the attached-bot and cross-account dashboard
@@ -2866,7 +2895,8 @@ class WebPortal:
             open_rate = float(trade.get("open_rate") or 0)
             if amount <= 0 or open_rate <= 0:
                 return trade
-            price = self._current_price(trade.get("pair", ""), trade.get("exchange"), network=network)
+            if price is None and network:
+                price = self._current_price(trade.get("pair", ""), trade.get("exchange"), network=True)
             if price is None:
                 return trade
 

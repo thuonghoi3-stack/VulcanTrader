@@ -246,6 +246,7 @@
     else if (S.side === "periods") paint("fleet", periodHtml(closed));
     else if (S.side === "pairs") paint("fleet", pairHtml(closed));
     else paint("fleet", logHtml());
+    markFleet();
 
     const pairs = pairChoices();
     if (!S.chartPair || !pairs.includes(S.chartPair)) S.chartPair = pairs[0] || "";
@@ -269,6 +270,26 @@
     paint("book", hint + bookHtml(open, closed));
   }
 
+  function markFleet() {
+    const root = $("fleet");
+    if (!root) return;
+    root.querySelectorAll("article.bot").forEach((el) => {
+      el.classList.toggle("on", el.dataset.account === S.bot);
+    });
+  }
+  function ensureChart() {
+    if (S.pane !== "chart") return;
+    const pairs = pairChoices();
+    const pairOk = S.chartPair && (!pairs.length || pairs.includes(S.chartPair));
+    if (S.candles && pairOk) {
+      S.marks = [...openTrades(), ...closedTrades()].filter((t) => t.pair === S.chartPair);
+      drawCandles();
+      return;
+    }
+    if (pairs.length && !pairs.includes(S.chartPair)) S.chartPair = pairs[0];
+    S.candles = null;
+    loadCandles().then(() => { if (S.view === "trading") renderTrading(); });
+  }
   function botList() {
     const head = `<label class="row"><input type="checkbox" data-act="nonbots" ${S.showNonBots ? "checked" : ""}> Show non-bots</label>`;
     const list = S.showNonBots ? S.configs : S.configs.filter((c) => c.is_bot !== false);
@@ -277,7 +298,7 @@
       const tone = c.crashed ? "neg" : c.running ? "pos" : "";
       const status = c.crashed ? "crashed" : c.running ? "running" : "stopped";
       const opts = S.strategies.map((s) => `<option value="${esc(s.name)}" ${s.name === c.strategy ? "selected" : ""}>${esc(s.name)}</option>`).join("");
-      return `<article class="bot ${S.bot === c.account_name ? "on" : ""}">
+      return `<article class="bot" data-account="${esc(c.account_name)}">
         <button type="button" class="row" data-act="view-bot" data-id="${esc(c.account_name)}" style="width:100%;background:none;border:0;padding:0;text-align:left">
           <b>${esc(c.name)}</b><span class="pill ${tone}">${status}</span>
         </button>
@@ -544,13 +565,13 @@
     const bot = S.bot;
     const seq = (S.dashSeq = (S.dashSeq || 0) + 1);
     const q = "?closed_limit=40" + (bot ? "&bot=" + encodeURIComponent(bot) : "");
-    const [dash, wl] = await Promise.all([
-      api("/api/dashboard" + q).catch((err) => {
-        S.dashError = err.message || "This bot has no trade history yet";
-        return null;
-      }),
-      api("/api/whitelist" + (bot ? "?bot=" + encodeURIComponent(bot) : "")).catch(() => ({ whitelist: [] })),
-    ]);
+    let dash = null;
+    try {
+      dash = await api("/api/dashboard" + q);
+    } catch (err) {
+      if (seq !== S.dashSeq || bot !== S.bot) return;
+      S.dashError = err.message || "This bot has no trade history yet";
+    }
     if (seq !== S.dashSeq || bot !== S.bot) return;
     if (dash) {
       S.dash = dash;
@@ -559,8 +580,15 @@
     } else if (!S.dash) {
       S.dash = { status: { state: "STOPPED", never_started: true }, open_trades: [], closed_trades: [], messages: [], logs: [] };
     }
-    S.whitelist = (wl && wl.whitelist) || [];
-    S.cacheWl[bot || ""] = S.whitelist;
+    if (!S.cacheWl[bot || ""]) {
+      api("/api/whitelist" + (bot ? "?bot=" + encodeURIComponent(bot) : "")).then((wl) => {
+        if (S.bot !== bot) return;
+        S.whitelist = (wl && wl.whitelist) || [];
+        S.cacheWl[bot || ""] = S.whitelist;
+      }).catch(() => {});
+    } else {
+      S.whitelist = S.cacheWl[bot || ""];
+    }
   }
   async function loadCandles() {
     const choices = pairChoices();
@@ -619,7 +647,7 @@
             if (S.view === "trading") {
               await loadDash();
               renderTrading();
-              if (!S.candles) loadCandles().then(() => { if (S.view === "trading") renderTrading(); });
+              ensureChart();
             } else if (S.view === "backtester") {
               await loadJobs();
               renderBacktest();
@@ -658,15 +686,17 @@
     const id = el.dataset.id;
     try {
       if (act === "side") { S.side = id; renderTrading(); }
-      else if (act === "pane") { S.pane = id; renderTrading(); }
+      else if (act === "pane") {
+        S.pane = id;
+        renderTrading();
+        if (id === "chart") ensureChart();
+      }
       else if (act === "pick-pair") { S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
       else if (act === "view-bot") {
         S.userBot = true;
         const next = S.bot === id ? "" : id;
         S.bot = next;
-        S.candles = null;
-        S.badPairs = {};
         S.dashSeq = (S.dashSeq || 0) + 1;
         if (S.cache[next]) {
           S.dash = S.cache[next];
