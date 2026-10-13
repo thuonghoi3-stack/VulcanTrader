@@ -11,7 +11,7 @@
     configs: [],
     strategies: [],
     examples: [],
-    showNonBots: false,
+    showNonBots: true,
     bot: "",
     dash: null,
     candles: null,
@@ -256,13 +256,16 @@
       note.textContent = skipped.length ? base + " · no data: " + skipped.slice(0, 4).join(", ") : base;
     }
     drawEquity(closed);
-    paint("book", bookHtml(open, closed));
+    const fresh = (S.dash && S.dash.status && S.dash.status.never_started) || S.dashError;
+    const hint = fresh ? `<p class="mute">${esc(S.dashError || "Chưa chạy lần nào. Chọn strategy, rồi bấm Start. Chưa có lệnh.")}</p>` : "";
+    paint("book", hint + bookHtml(open, closed));
   }
 
   function botList() {
     const head = `<label class="row"><input type="checkbox" data-act="nonbots" ${S.showNonBots ? "checked" : ""}> Show non-bots</label>`;
-    if (!S.configs.length) return head + `<p class="mute">No configs in user_data/configs.</p>`;
-    return head + S.configs.map((c) => {
+    const list = S.showNonBots ? S.configs : S.configs.filter((c) => c.is_bot !== false);
+    if (!list.length) return head + `<p class="mute">No configs in user_data/configs.</p>`;
+    return head + list.map((c) => {
       const tone = c.crashed ? "neg" : c.running ? "pos" : "";
       const status = c.crashed ? "crashed" : c.running ? "running" : "stopped";
       const opts = S.strategies.map((s) => `<option value="${esc(s.name)}" ${s.name === c.strategy ? "selected" : ""}>${esc(s.name)}</option>`).join("");
@@ -270,7 +273,7 @@
         <button type="button" class="row" data-act="view-bot" data-id="${esc(c.account_name)}" style="width:100%;background:none;border:0;padding:0;text-align:left">
           <b>${esc(c.name)}</b><span class="pill ${tone}">${status}</span>
         </button>
-        <div class="mute">${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}${c.cpu_percent != null ? " · " + Number(c.cpu_percent).toFixed(1) + "% CPU" : ""}</div>
+        <div class="mute">${c.is_bot === false ? "Not a bot · " : ""}${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}${c.cpu_percent != null ? " · " + Number(c.cpu_percent).toFixed(1) + "% CPU" : ""}</div>
         <label class="stack">Strategy<select class="field" data-act="strategy" data-id="${esc(c.name)}"><option value="">—</option>${opts}</select></label>
         <label class="row"><input type="checkbox" data-act="autostart" data-id="${esc(c.name)}" ${c.auto_start ? "checked" : ""}> Auto-start</label>
         <div class="row">
@@ -497,7 +500,7 @@
 
   async function loadMeta() {
     const [cfgs, strats, examples] = await Promise.all([
-      api("/api/configs" + (S.showNonBots ? "?all=true" : "")),
+      api("/api/configs?all=true"),
       api("/api/strategies"),
       api("/api/configs/examples").catch(() => ({ examples: [] })),
     ]);
@@ -506,6 +509,18 @@
     S.examples = examples.examples || [];
   }
   function ensureBot() {
+    if (S.pendingBot) {
+      const cfg = S.configs.find((c) => c.name === S.pendingBot);
+      S.pendingBot = "";
+      if (cfg) {
+        S.userBot = true;
+        S.bot = cfg.account_name;
+        S.tfBot = "";
+        S.candles = null;
+        S.badPairs = {};
+        return;
+      }
+    }
     const known = S.configs.some((c) => c.account_name === S.bot);
     if (S.bot && known) return;
     if (S.userBot && !S.bot) return;
@@ -518,7 +533,14 @@
     }
   }
   async function loadDash() {
-    S.dash = await api("/api/dashboard" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
+    const q = S.bot ? "?bot=" + encodeURIComponent(S.bot) : "";
+    try {
+      S.dash = await api("/api/dashboard" + q);
+      S.dashError = "";
+    } catch (err) {
+      S.dash = { status: { state: "STOPPED", never_started: true }, open_trades: [], closed_trades: [], messages: [], logs: [] };
+      S.dashError = err.message || "This bot has no trade history yet";
+    }
     try {
       const wl = await api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
       S.whitelist = wl.whitelist || [];
@@ -653,8 +675,12 @@
           e.preventDefault();
           const data = new FormData(e.target);
           try {
-            await api("/api/configs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), source: data.get("source") || null }) });
+            const created = await api("/api/configs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), source: data.get("source") || null }) });
             closeModal();
+            S.pendingBot = String((created && created.name) || data.get("name") || "").trim();
+            S.candles = null;
+            S.badPairs = {};
+            S.tfBot = "";
             await refresh();
           } catch (err) { $("new-err").textContent = err.message; }
         });

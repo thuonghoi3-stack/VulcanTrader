@@ -1553,7 +1553,7 @@ class WebPortal:
         """Dashboard payload built entirely from another bot's account DB."""
         path = self._find_account_db(name)
         if path is None:
-            raise HTTPException(status_code=404, detail=f"No account database named {name!r}")
+            return self._config_only_dashboard(name)
         try:
             data = json.loads(path.read_text(encoding="utf-8") or "{}")
         except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
@@ -1592,9 +1592,37 @@ class WebPortal:
             "status": status,
             "open_trades": [self._attach_live_pnl(_json_safe(t)) for t in open_trade_list],
             "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
-            # Another process's notifications/log stream isn't visible from here.
             "messages": [],
             "logs": _tail_log_file(_find_latest_log_file(), 200),
+        }
+
+    def _config_only_dashboard(self, name: str) -> dict:
+        """A config that has never been started has no account database yet."""
+        cfg = self._config_for_account(name) or {}
+        dry = bool(cfg.get("dry_run", True))
+        from VulcanTrader.constants import __version__
+        return {
+            "status": {
+                "attached": False,
+                "account": name,
+                "version": __version__,
+                "state": "STOPPED",
+                "crashed": False,
+                "dry_run": dry,
+                "mode": "dry_run" if dry else "live",
+                "exchange": (cfg.get("exchange") or {}).get("name"),
+                "strategy": cfg.get("strategy"),
+                "bot_name": cfg.get("bot_name") or name,
+                "started_at": None,
+                "uptime_secs": None,
+                "last_heartbeat": None,
+                "starting_capital": cfg.get("dry_run_wallet") or cfg.get("available_capital") or 0,
+                "never_started": True,
+            },
+            "open_trades": [],
+            "closed_trades": [],
+            "messages": [],
+            "logs": [],
         }
 
     def _get_pair_locks(self) -> list:
@@ -2946,6 +2974,15 @@ class WebPortal:
                 "dry_run": True,
                 "strategy": None,
             }, indent=4)
+        try:
+            parsed = json.loads(content)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            # Examples ship is_bot=false. A config created from the desk is a bot
+            # and must show up in the fleet without "Show non-bots".
+            parsed["is_bot"] = True
+            content = json.dumps(parsed, indent=4)
         try:
             dst.write_text(content, encoding="utf-8")
         except OSError as exc:
