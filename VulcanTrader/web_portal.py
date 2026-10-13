@@ -437,7 +437,7 @@ class WebPortal:
         # positions across bots doesn't refetch the same ticker per trade,
         # but still tracks the market closely between auto-refresh polls.
         self._ticker_cache: dict[str, tuple[float, float]] = {}
-        self.TICKER_CACHE_TTL: float = 5.0
+        self.TICKER_CACHE_TTL: float = 20.0
         # Hard wall-clock cap on any single public ticker fetch (see
         # _get_ccxt_public_client/_run_with_deadline) - a slow or rate-
         # limited exchange must never make "click a bot to view it" wait
@@ -989,8 +989,8 @@ class WebPortal:
 
         @app.get("/api/pair/candles", dependencies=[Depends(auth)])
         def api_pair_candles(pair: str, timeframe: str | None = None, limit: int = 500,
-                             bot: str | None = None) -> dict:
-            return self._pair_candles(pair, timeframe, limit, bot)
+                             bot: str | None = None, indicators: bool = True) -> dict:
+            return self._pair_candles(pair, timeframe, limit, bot, indicators)
 
         @app.get("/api/pair/trades", dependencies=[Depends(auth)])
         def api_pair_trades(pair: str, bot: str | None = None) -> dict:
@@ -1683,7 +1683,7 @@ class WebPortal:
         }
 
     def _pair_candles(self, pair: str, timeframe: str | None, limit: int,
-                      account: str | None = None) -> dict:
+                      account: str | None = None, indicators: bool = True) -> dict:
         """
         Return candles + every column the strategy added (indicators, signals)
         from the analyzed DataFrame cached by the DataProvider.
@@ -1695,7 +1695,7 @@ class WebPortal:
         """
         strat = self._strategy()
         if strat is None or self.bot is None:
-            return self._pair_candles_offline(pair, timeframe, limit, account)
+            return self._pair_candles_offline(pair, timeframe, limit, account, indicators)
         tf = timeframe or getattr(strat, "timeframe", None)
         if not tf:
             raise HTTPException(status_code=400, detail="timeframe required")
@@ -1809,7 +1809,7 @@ class WebPortal:
         return strat
 
     def _pair_candles_offline(self, pair: str, timeframe: str | None, limit: int,
-                              account: str | None) -> dict:
+                              account: str | None, indicators: bool = True) -> dict:
         """Candles + indicators for a bot this portal is not hosting."""
         cfg = self._config_for_account(account)
         if cfg is None:
@@ -1860,7 +1860,7 @@ class WebPortal:
         # Indicators are a bonus: a strategy that raises here should still leave
         # the user with a plain candle chart rather than an error box.
         indicator_error = None
-        if strat is not None:
+        if strat is not None and indicators:
             try:
                 df = strat.advise_indicators(df, {"pair": pair})
             except Exception as exc:

@@ -166,7 +166,13 @@
       </section>`;
     $("pair").addEventListener("change", () => { S.chartPair = $("pair").value; S.candles = null; loadCandles(); });
     $("tf").addEventListener("change", () => { S.tfUser = true; S.tf = $("tf").value; S.badPairs = {}; S.candles = null; loadCandles().then(renderTrading); });
-    $("ind").addEventListener("change", () => { S.ind = $("ind").value; drawCandles(); });
+    $("ind").addEventListener("change", () => {
+      S.ind = $("ind").value;
+      if (S.ind) {
+        S.candles = null;
+        loadCandles().then(() => { if (S.view === "trading") renderTrading(); });
+      } else drawCandles();
+    });
     $("bt-form").addEventListener("submit", onBacktest);
     $("dl-form").addEventListener("submit", onDownload);
     $("cov-exchange").addEventListener("change", () => { S.exchange = $("cov-exchange").value; S.coverage = null; loadCoverage().then(renderData); });
@@ -273,7 +279,7 @@
         <button type="button" class="row" data-act="view-bot" data-id="${esc(c.account_name)}" style="width:100%;background:none;border:0;padding:0;text-align:left">
           <b>${esc(c.name)}</b><span class="pill ${tone}">${status}</span>
         </button>
-        <div class="mute">${c.is_bot === false ? "Not a bot · " : ""}${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}${c.cpu_percent != null ? " · " + Number(c.cpu_percent).toFixed(1) + "% CPU" : ""}</div>
+        <div class="mute">${c.is_bot === false ? "Not a bot · " : ""}${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}</div>
         <label class="stack">Strategy<select class="field" data-act="strategy" data-id="${esc(c.name)}"><option value="">—</option>${opts}</select></label>
         <label class="row"><input type="checkbox" data-act="autostart" data-id="${esc(c.name)}" ${c.auto_start ? "checked" : ""}> Auto-start</label>
         <div class="row">
@@ -534,34 +540,28 @@
   }
   async function loadDash() {
     const q = S.bot ? "?bot=" + encodeURIComponent(S.bot) : "";
-    try {
-      S.dash = await api("/api/dashboard" + q);
+    const [dash, wl] = await Promise.all([
+      api("/api/dashboard" + q).catch((err) => {
+        S.dashError = err.message || "This bot has no trade history yet";
+        return null;
+      }),
+      api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : "")).catch(() => ({ whitelist: [] })),
+    ]);
+    if (dash) {
+      S.dash = dash;
       S.dashError = "";
-    } catch (err) {
+    } else if (!S.dash) {
       S.dash = { status: { state: "STOPPED", never_started: true }, open_trades: [], closed_trades: [], messages: [], logs: [] };
-      S.dashError = err.message || "This bot has no trade history yet";
     }
-    try {
-      const wl = await api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
-      S.whitelist = wl.whitelist || [];
-    } catch (err) { S.whitelist = []; }
-    if (S.bot && !S.tfUser && S.tfBot !== S.bot) {
-      S.tfBot = S.bot;
-      try {
-        const info = await api("/api/strategy/info?bot=" + encodeURIComponent(S.bot));
-        const has = [...$("tf").options].some((o) => o.value === info.timeframe);
-        if (has && S.tf !== info.timeframe) { S.tf = info.timeframe; S.candles = null; S.badPairs = {}; }
-      } catch (err) { /* keep the selected timeframe */ }
-    }
+    S.whitelist = (wl && wl.whitelist) || [];
   }
   async function loadCandles() {
     const choices = pairChoices();
     if (!S.chartPair || !choices.includes(S.chartPair)) S.chartPair = choices[0] || S.chartPair;
-    const queue = [...new Set([S.chartPair, ...choices])].filter(Boolean).slice(0, 6);
-    S.error = queue.length ? "" : "No pair to chart";
-    S.candles = S.candles || { candles: [], timeframe: S.tf };
+    const queue = [...new Set([S.chartPair, ...choices])].filter(Boolean).slice(0, 2);
+    if (!queue.length) { S.error = "No pair to chart"; return; }
     for (const pair of queue) {
-      const q = `?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(S.tf)}&limit=200` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
+      const q = `?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(S.tf)}&limit=120&indicators=${S.ind ? "true" : "false"}` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
       try {
         S.candles = await api("/api/pair/candles" + q);
         S.chartPair = pair;
@@ -593,23 +593,39 @@
     if (!S.exchange) { S.coverage = null; return; }
     S.coverage = await api("/api/data/coverage?exchange=" + encodeURIComponent(S.exchange));
   }
-  async function refresh() {
-    try {
-      await loadMeta();
-      if (S.view === "trading") {
-        ensureBot();
-        await loadDash();
-        if (!S.candles) await loadCandles();
-        renderTrading();
-      } else if (S.view === "backtester") {
-        await loadJobs();
-        renderBacktest();
-      } else {
-        if (!S.exchanges.length) await loadExchanges();
-        if (S.exchange && !S.coverage) await loadCoverage();
-        renderData();
-      }
-    } catch (err) { toast(err.message || "Refresh failed"); }
+  let refreshJob = null;
+  let refreshAgain = null;
+  async function refresh(opts) {
+    refreshAgain = opts || {};
+    if (refreshJob) return refreshJob;
+    refreshJob = (async () => {
+      try {
+        while (refreshAgain) {
+          const job = refreshAgain;
+          refreshAgain = null;
+          const full = job.full !== false;
+          try {
+            if (full || !S.configs.length) {
+              await loadMeta();
+              ensureBot();
+            }
+            if (S.view === "trading") {
+              await loadDash();
+              renderTrading();
+              if (!S.candles) loadCandles().then(() => { if (S.view === "trading") renderTrading(); });
+            } else if (S.view === "backtester") {
+              await loadJobs();
+              renderBacktest();
+            } else {
+              if (!S.exchanges.length) await loadExchanges();
+              if (S.exchange && !S.coverage) await loadCoverage();
+              renderData();
+            }
+          } catch (err) { toast(err.message || "Refresh failed"); }
+        }
+      } finally { refreshJob = null; }
+    })();
+    return refreshJob;
   }
 
   async function patchConfig(name, mutate) {
@@ -638,7 +654,15 @@
       else if (act === "pane") { S.pane = id; renderTrading(); }
       else if (act === "pick-pair") { S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
-      else if (act === "view-bot") { S.userBot = true; S.bot = S.bot === id ? "" : id; S.tfBot = ""; S.candles = null; S.badPairs = {}; await refresh(); }
+      else if (act === "view-bot") {
+        S.userBot = true;
+        S.bot = S.bot === id ? "" : id;
+        S.candles = null;
+        S.badPairs = {};
+        S.dash = { status: { state: "STOPPED" }, open_trades: [], closed_trades: [], messages: [], logs: [] };
+        renderTrading();
+        refresh({ full: false });
+      }
       else if (act === "start") {
         if (el.dataset.live === "1" && !window.confirm("Start LIVE " + id + "? This config can send real orders.")) return;
         await api("/api/configs/" + encodeURIComponent(id) + "/start", { method: "POST" });
@@ -801,7 +825,7 @@
     }).format(new Date()) + " ICT";
   }
   $("logout").onclick = () => { localStorage.removeItem("VulcanTrader_token"); location.href = "/login"; };
-  $("refresh").onclick = () => { S.candles = null; S.badPairs = {}; S.coverage = null; refresh(); };
+  $("refresh").onclick = () => { S.candles = null; S.badPairs = {}; S.coverage = null; refresh({ full: true }); };
   document.addEventListener("click", onClick);
   window.addEventListener("hashchange", () => { viewFromHash(); showView(); refresh(); });
   viewFromHash();
@@ -810,6 +834,10 @@
   tickClock();
   setInterval(tickClock, 1000);
   fetch("/api/version").then((r) => r.json()).then((b) => { $("ver").textContent = b.version ? "v" + b.version : ""; }).catch(() => {});
-  refresh();
-  setInterval(() => { if (S.view === "trading" || S.view === "backtester") refresh(); }, 8000);
+  refresh({ full: true });
+  setInterval(() => {
+    if (S.view !== "trading" && S.view !== "backtester") return;
+    S.polls = (S.polls || 0) + 1;
+    refresh({ full: S.polls % 4 === 0 });
+  }, 15000);
 })();
