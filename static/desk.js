@@ -66,9 +66,13 @@
     toast._t = setTimeout(() => { el.style.display = "none"; }, 3200);
   }
   async function api(url, opts) {
+    const extra = opts || {};
     const res = await fetch(url, {
-      ...opts,
-      headers: { Authorization: "Bearer " + token, ...(opts && opts.headers) },
+      method: extra.method,
+      body: extra.body,
+      signal: extra.signal,
+      priority: extra.priority || "auto",
+      headers: { Authorization: "Bearer " + token, ...(extra.headers || {}) },
     });
     if (res.status === 401) {
       localStorage.removeItem("VulcanTrader_token");
@@ -561,15 +565,24 @@
       S.badPairs = {};
     }
   }
+  let dashCtl = null;
+  function aborted(err) { return !!err && (err.name === "AbortError" || /aborted/i.test(err.message || "")); }
+  function afterPaint() {
+    if (globalThis.scheduler && typeof scheduler.yield === "function") return scheduler.yield();
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
   async function loadDash() {
     const bot = S.bot;
     const seq = (S.dashSeq = (S.dashSeq || 0) + 1);
+    if (dashCtl) dashCtl.abort();
+    dashCtl = new AbortController();
+    const signal = dashCtl.signal;
     const q = "?closed_limit=40" + (bot ? "&bot=" + encodeURIComponent(bot) : "");
     let dash = null;
     try {
-      dash = await api("/api/dashboard" + q);
+      dash = await api("/api/dashboard" + q, { signal, priority: "high" });
     } catch (err) {
-      if (seq !== S.dashSeq || bot !== S.bot) return;
+      if (aborted(err) || seq !== S.dashSeq || bot !== S.bot) return;
       S.dashError = err.message || "This bot has no trade history yet";
     }
     if (seq !== S.dashSeq || bot !== S.bot) return;
@@ -581,7 +594,7 @@
       S.dash = { status: { state: "STOPPED", never_started: true }, open_trades: [], closed_trades: [], messages: [], logs: [] };
     }
     if (!S.cacheWl[bot || ""]) {
-      api("/api/whitelist" + (bot ? "?bot=" + encodeURIComponent(bot) : "")).then((wl) => {
+      api("/api/whitelist" + (bot ? "?bot=" + encodeURIComponent(bot) : ""), { priority: "low" }).then((wl) => {
         if (S.bot !== bot) return;
         S.whitelist = (wl && wl.whitelist) || [];
         S.cacheWl[bot || ""] = S.whitelist;
@@ -598,7 +611,7 @@
     for (const pair of queue) {
       const q = `?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(S.tf)}&limit=120&indicators=${S.ind ? "true" : "false"}` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
       try {
-        S.candles = await api("/api/pair/candles" + q);
+        S.candles = await api("/api/pair/candles" + q, { priority: "low" });
         S.chartPair = pair;
         S.error = "";
         break;
@@ -698,13 +711,14 @@
         const next = S.bot === id ? "" : id;
         S.bot = next;
         S.dashSeq = (S.dashSeq || 0) + 1;
+        if (dashCtl) dashCtl.abort();
         if (S.cache[next]) {
           S.dash = S.cache[next];
           S.whitelist = S.cacheWl[next] || [];
           S.dashError = "";
         }
         renderTrading();
-        refresh({ full: false });
+        afterPaint().then(() => refresh({ full: false }));
       }
       else if (act === "start") {
         if (el.dataset.live === "1" && !window.confirm("Start LIVE " + id + "? This config can send real orders.")) return;

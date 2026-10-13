@@ -74,7 +74,10 @@ textarea.field { min-height: 180px; font-family: ui-monospace, monospace; font-s
 label.stack { display: block; color: var(--dim); font-size: 13px; }
 .bot {
   border: 1px solid var(--line); background: var(--bg); border-radius: 10px; padding: 10px; margin-bottom: 8px;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 148px;
 }
+button, a, select, label { touch-action: manipulation; }
 .bot.on { border-color: var(--accent); }
 .pill { font-size: 11px; border: 1px solid var(--line-2); border-radius: 999px; padding: 2px 8px; color: var(--dim); }
 .pill.pos { color: var(--pos); border-color: rgba(63, 143, 98, 0.45); }

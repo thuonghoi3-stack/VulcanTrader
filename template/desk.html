@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/desk.css">
-  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js" defer fetchpriority="low"></script>
 </head>
 <body>
   <header class="top">
@@ -25,6 +25,6 @@
   <nav class="dock" id="dock"></nav>
   <div id="modal" hidden></div>
   <div id="toast" role="status"></div>
-  <script src="/static/desk.js"></script>
+  <script src="/static/desk.js" defer></script>
 </body>
 </html>

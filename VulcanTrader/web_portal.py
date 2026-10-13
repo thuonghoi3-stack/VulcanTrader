@@ -661,6 +661,8 @@ class WebPortal:
     # ------------------------------------------------------------------
     def _build_app(self) -> FastAPI:  # noqa: C901 - plain route registration
         app = FastAPI(title="VulcanTrader Web Portal", docs_url="/api/docs")
+        from starlette.middleware.gzip import GZipMiddleware
+        app.add_middleware(GZipMiddleware, minimum_size=800)
 
         @app.on_event("startup")
         async def _reattach_log_capture() -> None:
