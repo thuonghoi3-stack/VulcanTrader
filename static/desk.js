@@ -10,11 +10,15 @@
     version: "",
     configs: [],
     strategies: [],
+    examples: [],
     showNonBots: false,
     bot: "",
     dash: null,
     candles: null,
+    marks: [],
     chartPair: "",
+    tf: "1h",
+    pane: "chart",
     side: "bots",
     jobs: [],
     results: [],
@@ -22,8 +26,8 @@
     coverage: null,
     exchange: "",
     error: "",
-    bt: { config: "", strategy: "", timerange: "", engine: "python" },
-    dl: { config: "", exchange: "", pairs: "", timeframes: "5m,15m,1h", days: "30" },
+    jobLog: "",
+    resultHtml: "",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -83,51 +87,40 @@
     const h = (location.hash || "#trading").slice(1);
     S.view = ["trading", "backtester", "data"].includes(h) ? h : "trading";
   }
-
   function nav() {
-    const items = [
-      ["trading", "Trading"],
-      ["backtester", "Backtester"],
-      ["data", "Data"],
-    ];
+    const items = [["trading", "Trading"], ["backtester", "Backtester"], ["data", "Data"]];
     const html = items.map(([id, label]) => `<a href="#${id}" class="${S.view === id ? "on" : ""}">${label}</a>`).join("");
     $("nav").innerHTML = html;
     $("dock").innerHTML = html;
   }
-
-  function closedTrades() {
-    return ((S.dash && S.dash.closed_trades) || []).filter((t) => !t.is_open);
-  }
-  function openTrades() {
-    return (S.dash && S.dash.open_trades) || [];
-  }
-  function profitAbs(t) {
-    const v = t.close_profit_abs != null ? t.close_profit_abs : t.profit_abs;
-    return Number(v) || 0;
-  }
-  function profitPct(t) {
-    const v = t.close_profit != null ? t.close_profit : t.profit_ratio;
-    return (Number(v) || 0) * 100;
-  }
+  function closedTrades() { return ((S.dash && S.dash.closed_trades) || []).filter((t) => !t.is_open); }
+  function openTrades() { return (S.dash && S.dash.open_trades) || []; }
+  function profitAbs(t) { return Number(t.close_profit_abs != null ? t.close_profit_abs : t.profit_abs) || 0; }
+  function profitPct(t) { return (Number(t.close_profit != null ? t.close_profit : t.profit_ratio) || 0) * 100; }
 
   function shell() {
     $("app").innerHTML = `
       <section id="view-trading">
         <div class="grid-4" id="pulses"></div>
+        <div class="seg row phone-only" id="pane"></div>
         <div class="split">
-          <section class="card">
+          <section class="card pane-fleet">
             <h2>Fleet <button type="button" class="btn" data-act="new-bot">New</button></h2>
             <div class="seg row" id="side"></div>
             <div id="fleet"></div>
           </section>
           <div>
-            <section class="card">
+            <section class="card pane-chart">
               <h2>Pair chart <span class="mute" id="chart-note"></span></h2>
-              <label class="stack">Pair<select id="pair" class="field"></select></label>
+              <div class="row">
+                <label class="stack" style="flex:1">Pair<select id="pair" class="field"></select></label>
+                <label class="stack">TF<select id="tf" class="field"><option>15m</option><option selected>1h</option><option>4h</option></select></label>
+              </div>
               <div id="chart"></div>
+              <svg id="equity" viewBox="0 0 280 78" class="equity" hidden></svg>
+              <p id="equity-note" class="mute"></p>
             </section>
-            <section class="card desk-only" id="book-desk"></section>
-            <section class="card phone-only" id="book-phone"></section>
+            <section class="card pane-book" id="book"></section>
           </div>
         </div>
       </section>
@@ -143,8 +136,8 @@
           </form>
           <p class="mute">Rust needs the indicator binary from build-rust-indicators. Python always works.</p>
         </section>
-        <section class="card"><h2>Jobs</h2><div id="jobs"></div></section>
-        <section class="card"><h2>Saved results</h2><div id="results"></div></section>
+        <section class="card"><h2>Jobs</h2><div id="jobs"></div><pre id="job-log" class="log"></pre></section>
+        <section class="card"><h2>Saved results</h2><div id="results"></div><div id="result-detail"></div></section>
       </section>
       <section id="view-data" hidden>
         <section class="card">
@@ -164,50 +157,78 @@
           <div id="coverage"></div>
         </section>
       </section>`;
-    $("pair").addEventListener("change", () => {
-      S.chartPair = $("pair").value;
-      loadCandles();
-    });
+    $("pair").addEventListener("change", () => { S.chartPair = $("pair").value; S.candles = null; loadCandles(); });
+    $("tf").addEventListener("change", () => { S.tf = $("tf").value; S.candles = null; loadCandles(); });
     $("bt-form").addEventListener("submit", onBacktest);
     $("dl-form").addEventListener("submit", onDownload);
-    $("cov-exchange").addEventListener("change", () => {
-      S.exchange = $("cov-exchange").value;
-      loadCoverage();
-    });
+    $("cov-exchange").addEventListener("change", () => { S.exchange = $("cov-exchange").value; S.coverage = null; loadCoverage().then(renderData); });
   }
 
   function showView() {
-    ["trading", "backtester", "data"].forEach((id) => {
-      $("view-" + id).hidden = S.view !== id;
-    });
+    ["trading", "backtester", "data"].forEach((id) => { $("view-" + id).hidden = S.view !== id; });
     $("banner").textContent = S.view === "trading"
-      ? "Live desk. Bots, trades, and candles come from this VulcanTrader API. Classic UI stays at /trading-classic."
+      ? "Live desk. Select a bot before force-exit. LIVE start asks for confirmation. Classic UI stays at /trading-classic."
       : S.view === "backtester"
-        ? "Queue a real backtest on this machine. The full hyperopt and regime tools stay on the classic page."
-        : "Coverage reads the feather files already on disk. Downloads run as background jobs.";
+        ? "Queue a real backtest. Open a job for its log, or a saved result for MAE/MFE."
+        : "Coverage reads feather files on this machine. Downloads run as background jobs.";
     nav();
+  }
+
+  function curve(closed) {
+    const rows = closed.slice().sort((a, b) => String(a.close_date || "").localeCompare(String(b.close_date || "")));
+    let eq = 0, peak = 0, maxDd = 0;
+    const pts = rows.map((t) => {
+      eq += profitAbs(t);
+      peak = Math.max(peak, eq);
+      maxDd = Math.max(maxDd, peak - eq);
+      return eq;
+    });
+    return { pts, maxDd, pnl: eq };
+  }
+  function excursion(t) {
+    const open = Number(t.open_rate) || 0;
+    const minR = Number(t.min_rate) || 0;
+    const maxR = Number(t.max_rate) || 0;
+    if (!(open > 0 && minR > 0 && maxR > minR)) return null;
+    const mae = t.is_short ? Math.max(0, ((maxR - open) / open) * 100) : Math.max(0, ((open - minR) / open) * 100);
+    const mfe = t.is_short ? Math.max(0, ((open - minR) / open) * 100) : Math.max(0, ((maxR - open) / open) * 100);
+    const clip = (n) => Math.max(0, Math.min(100, n));
+    const entry = t.is_short ? ((open - minR) / (maxR - minR)) * 100 : ((maxR - open) / (maxR - minR)) * 100;
+    let exit = null;
+    if (!t.is_open && Number(t.close_rate)) {
+      const close = Number(t.close_rate);
+      exit = t.is_short ? ((maxR - close) / (maxR - minR)) * 100 : ((close - minR) / (maxR - minR)) * 100;
+    }
+    return { mae, mfe, entry: clip(entry), exit: exit == null ? null : clip(exit) };
+  }
+  function bar(n) {
+    return `<span class="qbar"><i style="width:${Math.max(0, Math.min(100, Number(n) || 0)).toFixed(0)}%"></i></span>`;
   }
 
   function renderTrading() {
     const open = openTrades();
     const closed = closedTrades();
     const unreal = open.reduce((s, t) => s + profitAbs(t), 0);
-    const closedPnl = closed.reduce((s, t) => s + profitAbs(t), 0);
+    const { maxDd, pnl } = curve(closed);
     const running = S.configs.filter((c) => c.running).length;
     const crashed = S.configs.filter((c) => c.crashed).length;
     const live = S.configs.filter((c) => c.running && !c.dry_run).length;
     paint("pulses", [
-      ["Running", running, live ? live + " live" : "paper only", live ? "neg" : "pos"],
-      ["Attention", crashed, "crashed", crashed ? "neu" : ""],
+      ["Running", String(running), live ? live + " live" : "paper only", live ? "neg" : "pos"],
+      ["Attention", String(crashed), "crashed", crashed ? "neu" : ""],
       ["Unrealized", money(unreal), open.length + " open", cls(unreal)],
-      ["Closed PnL", money(closedPnl), closed.length + " closed", cls(closedPnl)],
+      ["Closed PnL", money(pnl), "DD " + money(-maxDd), cls(pnl)],
     ].map(([l, v, h, c]) => `<div class="pulse"><span>${l}</span><b class="${c}">${esc(v)}</b><span>${esc(h)}</span></div>`).join(""));
 
-    const sides = [["bots", "Bots"], ["metrics", "Metrics"], ["log", "Log"]];
+    const sides = [["bots", "Bots"], ["metrics", "Metrics"], ["periods", "Periods"], ["pairs", "Pairs"], ["log", "Log"]];
     paint("side", sides.map(([id, label]) => `<button type="button" data-act="side" data-id="${id}" class="${S.side === id ? "on" : ""}">${label}</button>`).join(""));
+    paint("pane", ["fleet", "chart", "book"].map((id) => `<button type="button" data-act="pane" data-id="${id}" class="${S.pane === id ? "on" : ""}">${id[0].toUpperCase() + id.slice(1)}</button>`).join(""));
+    document.body.dataset.pane = S.pane;
 
     if (S.side === "bots") paint("fleet", botList());
-    else if (S.side === "metrics") paint("fleet", metricsHtml(closed));
+    else if (S.side === "metrics") paint("fleet", metricsHtml(closed, pnl, maxDd));
+    else if (S.side === "periods") paint("fleet", periodHtml(closed));
+    else if (S.side === "pairs") paint("fleet", pairHtml(closed));
     else paint("fleet", logHtml());
 
     const pairs = [...new Set([...open, ...closed].map((t) => t.pair).filter(Boolean))];
@@ -216,61 +237,86 @@
     const pairEl = $("pair");
     if (pairEl && !pairEl.contains(document.activeElement)) {
       const html = pairs.map((p) => `<option value="${esc(p)}">${esc(p)}</option>`).join("");
-      if (pairEl.dataset.html !== html) {
-        pairEl.dataset.html = html;
-        pairEl.innerHTML = html;
-      }
+      if (pairEl.dataset.html !== html) { pairEl.dataset.html = html; pairEl.innerHTML = html; }
       pairEl.value = S.chartPair;
     }
+    const tfEl = $("tf");
+    if (tfEl && !tfEl.contains(document.activeElement)) tfEl.value = S.tf;
     const note = $("chart-note");
-    if (note) note.textContent = S.candles ? (S.candles.timeframe || "") + " · " + ((S.candles.candles || []).length) + " bars" : "loading";
-    paintBooks(open, closed);
+    if (note) note.textContent = S.error || (S.candles ? (S.candles.timeframe || S.tf) + " · " + ((S.candles.candles || []).length) + " bars" : "loading");
+    drawEquity(closed);
+    paint("book", bookHtml(open, closed));
   }
 
   function botList() {
-    if (!S.configs.length) return `<p class="mute">No configs in user_data/configs.</p><label class="row"><input type="checkbox" data-act="nonbots" ${S.showNonBots ? "checked" : ""}> Show non-bots</label>`;
-    return `<label class="row"><input type="checkbox" data-act="nonbots" ${S.showNonBots ? "checked" : ""}> Show non-bots</label>` +
-      S.configs.map((c) => {
-        const tone = c.crashed ? "neg" : c.running ? "pos" : "";
-        const status = c.crashed ? "crashed" : c.running ? "running" : "stopped";
-        const opts = S.strategies.map((s) => `<option value="${esc(s.name)}" ${s.name === c.strategy ? "selected" : ""}>${esc(s.name)}</option>`).join("");
-        return `<article class="bot ${S.bot === c.account_name ? "on" : ""}">
-          <button type="button" class="row" data-act="view-bot" data-id="${esc(c.account_name)}" style="width:100%;background:none;border:0;padding:0;text-align:left">
-            <b>${esc(c.name)}</b><span class="pill ${tone}">${status}</span>
-          </button>
-          <div class="mute">${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}${c.cpu_percent != null ? " · " + Number(c.cpu_percent).toFixed(1) + "% CPU" : ""}</div>
-          <label class="stack">Strategy<select class="field" data-act="strategy" data-id="${esc(c.name)}"><option value="">—</option>${opts}</select></label>
-          <div class="row">
-            <button class="btn icon" data-act="start" data-id="${esc(c.name)}" ${c.running || !c.strategy ? "disabled" : ""}>Start</button>
-            <button class="btn icon" data-act="stop" data-id="${esc(c.name)}" ${c.running ? "" : "disabled"}>Stop</button>
-            <button class="btn icon" data-act="edit" data-id="${esc(c.name)}">Edit</button>
-            <button class="btn icon" data-act="dup" data-id="${esc(c.name)}">Copy</button>
-            <button class="btn icon" data-act="rename" data-id="${esc(c.name)}" ${c.running ? "disabled" : ""}>Rename</button>
-            <button class="btn icon" data-act="delete" data-id="${esc(c.name)}" ${c.running ? "disabled" : ""}>Delete</button>
-          </div>
-        </article>`;
-      }).join("");
+    const head = `<label class="row"><input type="checkbox" data-act="nonbots" ${S.showNonBots ? "checked" : ""}> Show non-bots</label>`;
+    if (!S.configs.length) return head + `<p class="mute">No configs in user_data/configs.</p>`;
+    return head + S.configs.map((c) => {
+      const tone = c.crashed ? "neg" : c.running ? "pos" : "";
+      const status = c.crashed ? "crashed" : c.running ? "running" : "stopped";
+      const opts = S.strategies.map((s) => `<option value="${esc(s.name)}" ${s.name === c.strategy ? "selected" : ""}>${esc(s.name)}</option>`).join("");
+      return `<article class="bot ${S.bot === c.account_name ? "on" : ""}">
+        <button type="button" class="row" data-act="view-bot" data-id="${esc(c.account_name)}" style="width:100%;background:none;border:0;padding:0;text-align:left">
+          <b>${esc(c.name)}</b><span class="pill ${tone}">${status}</span>
+        </button>
+        <div class="mute">${c.dry_run ? "Paper" : "LIVE"} · ${esc(c.exchange || "—")}${c.cpu_percent != null ? " · " + Number(c.cpu_percent).toFixed(1) + "% CPU" : ""}</div>
+        <label class="stack">Strategy<select class="field" data-act="strategy" data-id="${esc(c.name)}"><option value="">—</option>${opts}</select></label>
+        <label class="row"><input type="checkbox" data-act="autostart" data-id="${esc(c.name)}" ${c.auto_start ? "checked" : ""}> Auto-start</label>
+        <div class="row">
+          <button class="btn icon" data-act="start" data-id="${esc(c.name)}" data-live="${c.dry_run ? "0" : "1"}" ${c.running || !c.strategy ? "disabled" : ""}>Start</button>
+          <button class="btn icon" data-act="stop" data-id="${esc(c.name)}" ${c.running ? "" : "disabled"}>Stop</button>
+          <button class="btn icon" data-act="edit" data-id="${esc(c.name)}">Edit</button>
+          <button class="btn icon" data-act="dup" data-id="${esc(c.name)}">Copy</button>
+          <button class="btn icon" data-act="rename" data-id="${esc(c.name)}" ${c.running ? "disabled" : ""}>Rename</button>
+          <button class="btn icon" data-act="delete" data-id="${esc(c.name)}" ${c.running ? "disabled" : ""}>Delete</button>
+        </div>
+      </article>`;
+    }).join("");
   }
 
-  function metricsHtml(closed) {
+  function metricsHtml(closed, pnl, maxDd) {
     const wins = closed.filter((t) => profitAbs(t) > 0);
     const losses = closed.filter((t) => profitAbs(t) < 0);
     const gp = wins.reduce((s, t) => s + profitAbs(t), 0);
     const gl = Math.abs(losses.reduce((s, t) => s + profitAbs(t), 0));
-    const pnl = closed.reduce((s, t) => s + profitAbs(t), 0);
-    const wr = closed.length ? (wins.length / closed.length) * 100 : 0;
     const pf = gl ? gp / gl : gp ? Infinity : 0;
+    const wr = closed.length ? (wins.length / closed.length) * 100 : 0;
     const cells = [
-      ["Win rate", pct(wr)],
-      ["Trades", String(closed.length)],
-      ["PnL", money(pnl)],
+      ["Win rate", pct(wr)], ["Trades", String(closed.length)], ["PnL", money(pnl)],
       ["Profit factor", Number.isFinite(pf) ? pf.toFixed(2) : "∞"],
-      ["Wins", String(wins.length)],
-      ["Losses", String(losses.length)],
+      ["Max DD", money(-maxDd)], ["Avg trade", money(closed.length ? pnl / closed.length : 0)],
+      ["Wins", String(wins.length)], ["Losses", String(losses.length)],
     ];
-    return `<div class="grid-2">${cells.map(([k, v]) => `<div class="pulse"><span>${k}</span><b>${esc(v)}</b></div>`).join("")}</div>`;
+    return `<div class="grid-2">${cells.map(([k, v]) => `<div class="pulse"><span>${k}</span><b class="${cls(String(v).includes("−") ? -1 : 1)}">${esc(v)}</b></div>`).join("")}</div>`;
   }
-
+  function periodHtml(closed) {
+    const buckets = new Map();
+    closed.forEach((t) => {
+      const key = String(t.close_date || "").slice(0, 7) || "—";
+      const row = buckets.get(key) || { n: 0, pnl: 0, wins: 0 };
+      row.n += 1; row.pnl += profitAbs(t); if (profitAbs(t) > 0) row.wins += 1;
+      buckets.set(key, row);
+    });
+    const rows = [...buckets.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 8);
+    if (!rows.length) return `<p class="mute">No closed trades yet.</p>`;
+    return rows.map(([key, row]) => `<div class="bot"><b>${esc(key)}</b><div class="mute">${row.n} trades · win ${row.n ? Math.round((row.wins / row.n) * 100) : 0}%</div><div class="${cls(row.pnl)}">${money(row.pnl)}</div></div>`).join("");
+  }
+  function pairHtml(closed) {
+    const buckets = new Map();
+    closed.forEach((t) => {
+      const row = buckets.get(t.pair) || { n: 0, pnl: 0, gp: 0, gl: 0 };
+      const p = profitAbs(t);
+      row.n += 1; row.pnl += p; if (p > 0) row.gp += p; else row.gl += Math.abs(p);
+      buckets.set(t.pair, row);
+    });
+    const rows = [...buckets.entries()].sort((a, b) => b[1].pnl - a[1].pnl);
+    if (!rows.length) return `<p class="mute">No closed trades yet.</p>`;
+    const line = (title, list) => `<h3>${title}</h3>` + list.map(([pair, row]) => {
+      const pf = row.gl ? row.gp / row.gl : row.gp ? Infinity : 0;
+      return `<button type="button" class="bot" data-act="pick-pair" data-id="${esc(pair)}" style="width:100%;text-align:left"><b>${esc(pair)}</b> <span class="${cls(row.pnl)}">${money(row.pnl)}</span><div class="mute">${row.n} trades · PF ${Number.isFinite(pf) ? pf.toFixed(2) : "∞"}</div></button>`;
+    }).join("");
+    return line("Best", rows.slice(0, 8)) + line("Worst", rows.slice().reverse().slice(0, 8));
+  }
   function logHtml() {
     const messages = (S.dash && S.dash.messages) || [];
     const logs = (S.dash && S.dash.logs) || [];
@@ -278,22 +324,40 @@
     if (!lines.length) return `<p class="mute">No messages yet.</p>`;
     return `<div class="log">${lines.slice(-40).reverse().map((line) => {
       const text = typeof line === "string" ? line : (line.message || line.msg || JSON.stringify(line));
-      const when = line.date || line.time || "";
-      return `<p><span class="mute">${esc(when)}</span><br>${esc(text)}</p>`;
+      return `<p><span class="mute">${esc(line.date || line.time || "")}</span><br>${esc(text)}</p>`;
     }).join("")}</div>`;
   }
-
-  function tradeRows(list, open) {
-    if (!list.length) return `<p class="mute">${open ? "No open trades." : "No closed trades."}</p>`;
-    return `<div class="phone-only">${list.slice(0, 40).map((t) => `<div class="bot"><b>${esc(t.pair)}</b> <span class="${t.is_short ? "neg" : "pos"}">${t.is_short ? "SHORT" : "LONG"}</span><div class="${cls(profitAbs(t))}">${money(profitAbs(t))} · ${pct(profitPct(t))}</div></div>`).join("")}</div>
-      <div class="desk-only"><table><thead><tr><th>Pair</th><th>Side</th><th>PnL</th><th>%</th><th>${open ? "Rate" : "Exit"}</th></tr></thead><tbody>
-      ${list.slice(0, 80).map((t) => `<tr><td>${esc(t.pair)}</td><td class="${t.is_short ? "neg" : "pos"}">${t.is_short ? "SHORT" : "LONG"}</td><td class="${cls(profitAbs(t))}">${money(profitAbs(t))}</td><td class="${cls(profitPct(t))}">${pct(profitPct(t))}</td><td>${esc(open ? t.current_rate || t.open_rate : t.exit_reason || "")}</td></tr>`).join("")}
-      </tbody></table></div>`;
+  function bookHtml(open, closed) {
+    const row = (t, isOpen) => {
+      const x = excursion(t);
+      const exit = isOpen
+        ? `<button type="button" class="btn" data-act="force" data-pair="${esc(t.pair)}">Force exit</button>`
+        : esc(t.exit_reason || "");
+      return `<article class="bot">
+        <button type="button" data-act="pick-pair" data-id="${esc(t.pair)}" style="background:none;border:0;padding:0;color:inherit;text-align:left">
+          <b>${esc(t.pair)}</b> <span class="${t.is_short ? "neg" : "pos"}">${t.is_short ? "SHORT" : "LONG"}</span>
+        </button>
+        <div class="${cls(profitAbs(t))}">${money(profitAbs(t))} · ${pct(profitPct(t))}</div>
+        ${x ? `<div class="mute">MAE ${x.mae.toFixed(2)}% · MFE ${x.mfe.toFixed(2)}%</div><div class="mute">Entry</div>${bar(x.entry)}${x.exit == null ? "" : `<div class="mute">Exit</div>${bar(x.exit)}`}` : ""}
+        <div class="row">${exit}</div>
+      </article>`;
+    };
+    return `<h2>Open (${open.length})</h2>${open.length ? open.slice(0, 40).map((t) => row(t, true)).join("") : `<p class="mute">No open trades.</p>`}
+      <h2>Closed (${closed.length})</h2>${closed.length ? closed.slice(0, 40).map((t) => row(t, false)).join("") : `<p class="mute">No closed trades.</p>`}`;
   }
-  function paintBooks(open, closed) {
-    const html = `<h2>Open (${open.length}) <span class="${cls(open.reduce((s, t) => s + profitAbs(t), 0))}">${money(open.reduce((s, t) => s + profitAbs(t), 0))}</span></h2>${tradeRows(open, true)}<h2>Closed (${closed.length})</h2>${tradeRows(closed, false)}`;
-    paint("book-desk", html);
-    paint("book-phone", html);
+  function drawEquity(closed) {
+    const svg = $("equity");
+    const note = $("equity-note");
+    if (!svg || !note) return;
+    const { pts, maxDd } = curve(closed);
+    if (pts.length < 2) { svg.hidden = true; note.textContent = ""; return; }
+    const min = Math.min(0, ...pts);
+    const max = Math.max(0, ...pts);
+    const span = max - min || 1;
+    const points = pts.map((v, i) => ((i / (pts.length - 1)) * 280).toFixed(1) + "," + (70 - ((v - min) / span) * 64).toFixed(1)).join(" ");
+    svg.hidden = false;
+    svg.innerHTML = `<polyline fill="none" stroke="#e7a15a" stroke-width="2" points="${points}"/>`;
+    note.textContent = "Closed equity · max DD " + money(-maxDd);
   }
 
   let chart, series;
@@ -305,18 +369,12 @@
       const raw = c.date || c.time || c[0];
       const ms = typeof raw === "number" ? (raw > 1e12 ? raw : raw * 1000) : Date.parse(raw);
       if (!Number.isFinite(ms)) return null;
-      return {
-        time: Math.floor(ms / 1000),
-        open: Number(c.open ?? c[1]),
-        high: Number(c.high ?? c[2]),
-        low: Number(c.low ?? c[3]),
-        close: Number(c.close ?? c[4]),
-      };
+      return { time: Math.floor(ms / 1000), open: Number(c.open ?? c[1]), high: Number(c.high ?? c[2]), low: Number(c.low ?? c[3]), close: Number(c.close ?? c[4]) };
     }).filter(Boolean).sort((a, b) => a.time - b.time);
     const dedup = [];
-    data.forEach((bar) => {
-      if (!dedup.length || dedup[dedup.length - 1].time !== bar.time) dedup.push(bar);
-      else dedup[dedup.length - 1] = bar;
+    data.forEach((barRow) => {
+      if (!dedup.length || dedup[dedup.length - 1].time !== barRow.time) dedup.push(barRow);
+      else dedup[dedup.length - 1] = barRow;
     });
     if (!chart) {
       chart = LightweightCharts.createChart(el, {
@@ -325,43 +383,45 @@
         grid: { vertLines: { color: "#2c2823" }, horzLines: { color: "#2c2823" } },
         timeScale: { timeVisible: true },
       });
-      series = chart.addCandlestickSeries({
-        upColor: "#3f8f62", downColor: "#a33b32", borderVisible: false,
-        wickUpColor: "#3f8f62", wickDownColor: "#a33b32",
-      });
+      series = chart.addCandlestickSeries({ upColor: "#3f8f62", downColor: "#a33b32", borderVisible: false, wickUpColor: "#3f8f62", wickDownColor: "#a33b32" });
       new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
     }
     series.setData(dedup);
-    if (!dedup.length) el.insertAdjacentHTML("beforeend", "");
+    const markers = (S.marks || []).map((t) => {
+      const ms = Date.parse(t.open_date || "");
+      if (!Number.isFinite(ms)) return null;
+      return { time: Math.floor(ms / 1000), position: t.is_short ? "aboveBar" : "belowBar", color: t.is_short ? "#a33b32" : "#3f8f62", shape: t.is_short ? "arrowDown" : "arrowUp", text: t.is_short ? "S" : "L" };
+    }).filter(Boolean).sort((a, b) => a.time - b.time);
+    series.setMarkers(markers);
   }
 
-  function fillSelect(id, rows, valueKey, labelKey) {
+  function fillSelect(id, rows, valueKey) {
     const el = $(id);
     if (!el || el.contains(document.activeElement)) return;
     const html = rows.map((row) => {
       const value = typeof row === "string" ? row : row[valueKey];
-      const label = typeof row === "string" ? row : (row[labelKey] || value);
+      const label = typeof row === "string" ? row : (row.name || value);
       return `<option value="${esc(value)}">${esc(label)}</option>`;
     }).join("");
     if (el.dataset.html === html) return;
     el.dataset.html = html;
     el.innerHTML = html || `<option value="">—</option>`;
   }
-
   function renderBacktest() {
-    fillSelect("bt-config", S.configs, "name", "name");
-    fillSelect("bt-strategy", S.strategies, "name", "name");
-    paint("jobs", S.jobs.length ? `<table><thead><tr><th>Status</th><th>Config</th><th>Strategy</th><th>Engine</th></tr></thead><tbody>${
-      S.jobs.slice(0, 20).map((j) => `<tr><td class="${j.status === "succeeded" ? "pos" : j.status === "failed" || j.status === "error" ? "neg" : ""}">${esc(j.status)}</td><td>${esc(j.config)}</td><td>${esc(j.strategy || "")}</td><td>${esc(j.engine || "")}</td></tr>`).join("")
-    }</tbody></table>` : `<p class="mute">No jobs in this session.</p>`);
-    paint("results", S.results.length ? S.results.slice(0, 15).map((r) => `<div class="bot"><b>${esc(r.name)}</b><div class="mute">${esc(r.filename)}</div></div>`).join("") : `<p class="mute">No saved backtests yet.</p>`);
+    fillSelect("bt-config", S.configs, "name");
+    fillSelect("bt-strategy", S.strategies, "name");
+    paint("jobs", S.jobs.length ? S.jobs.slice(0, 20).map((j) => `<div class="bot"><button type="button" data-act="job" data-id="${esc(j.id)}" style="background:none;border:0;color:inherit;padding:0"><b class="${j.status === "succeeded" ? "pos" : j.status === "failed" || j.status === "error" ? "neg" : ""}">${esc(j.status)}</b> ${esc(j.config)} · ${esc(j.strategy || "")}</button>${j.status === "running" ? ` <button type="button" class="btn" data-act="cancel-job" data-id="${esc(j.id)}">Cancel</button>` : ""}</div>`).join("") : `<p class="mute">No jobs in this session.</p>`);
+    const log = $("job-log");
+    if (log && !log.contains(document.activeElement)) log.textContent = S.jobLog;
+    paint("results", S.results.length ? S.results.slice(0, 15).map((r) => `<button type="button" class="bot" data-act="result" data-id="${esc(r.name)}" style="width:100%;text-align:left"><b>${esc(r.name)}</b><div class="mute">${esc(r.filename)}</div></button>`).join("") : `<p class="mute">No saved backtests yet.</p>`);
+    const detail = $("result-detail");
+    if (detail && detail.dataset.html !== S.resultHtml) { detail.dataset.html = S.resultHtml; detail.innerHTML = S.resultHtml; }
   }
-
   function renderData() {
-    fillSelect("dl-config", S.configs, "name", "name");
+    fillSelect("dl-config", S.configs, "name");
     const names = S.exchanges.map((e) => (typeof e === "string" ? e : e.name));
-    fillSelect("dl-exchange", names, "name", "name");
-    fillSelect("cov-exchange", names, "name", "name");
+    fillSelect("dl-exchange", names, "name");
+    fillSelect("cov-exchange", names, "name");
     const rows = (S.coverage && S.coverage.rows) || [];
     const summary = (S.coverage && S.coverage.summary) || {};
     paint("coverage", `<p class="mute">${summary.pair_count || 0} pairs · ${summary.file_count || 0} files</p>` + (rows.length
@@ -370,51 +430,51 @@
   }
 
   async function loadMeta() {
-    const [cfgs, strats] = await Promise.all([
+    const [cfgs, strats, examples] = await Promise.all([
       api("/api/configs" + (S.showNonBots ? "?all=true" : "")),
       api("/api/strategies"),
+      api("/api/configs/examples").catch(() => ({ examples: [] })),
     ]);
     S.configs = cfgs.configs || [];
     S.strategies = strats.strategies || [];
+    S.examples = examples.examples || [];
   }
   async function loadDash() {
-    const q = S.bot ? "?bot=" + encodeURIComponent(S.bot) : "";
-    S.dash = await api("/api/dashboard" + q);
+    S.dash = await api("/api/dashboard" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : ""));
   }
   async function loadCandles() {
     if (!S.chartPair) return;
-    const q = `?pair=${encodeURIComponent(S.chartPair)}&limit=200` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
+    const q = `?pair=${encodeURIComponent(S.chartPair)}&timeframe=${encodeURIComponent(S.tf)}&limit=200` + (S.bot ? "&bot=" + encodeURIComponent(S.bot) : "");
     try {
       S.candles = await api("/api/pair/candles" + q);
       S.error = "";
     } catch (err) {
-      S.candles = { candles: [], timeframe: "" };
+      S.candles = { candles: [], timeframe: S.tf };
       S.error = err.message;
     }
+    try {
+      const body = await api("/api/pair/trades?pair=" + encodeURIComponent(S.chartPair));
+      S.marks = body.trades || [];
+    } catch (err) { S.marks = []; }
     drawCandles();
-    const note = $("chart-note");
-    if (note) note.textContent = S.error || ((S.candles.timeframe || "—") + " · " + ((S.candles.candles || []).length) + " bars");
   }
   async function loadJobs() {
     const [jobs, results] = await Promise.all([
       api("/api/backtests/jobs").catch(() => ({ jobs: [] })),
       api("/api/backtests").catch(() => ({ backtests: [] })),
     ]);
-    S.jobs = (jobs.jobs || []).filter((j) => j.kind === "backtest" || !j.kind);
+    S.jobs = jobs.jobs || [];
     S.results = results.backtests || [];
   }
   async function loadExchanges() {
     const body = await api("/api/exchanges");
     S.exchanges = body.exchanges || [];
-    if (!S.exchange && S.exchanges.length) {
-      S.exchange = typeof S.exchanges[0] === "string" ? S.exchanges[0] : S.exchanges[0].name;
-    }
+    if (!S.exchange && S.exchanges.length) S.exchange = typeof S.exchanges[0] === "string" ? S.exchanges[0] : S.exchanges[0].name;
   }
   async function loadCoverage() {
     if (!S.exchange) { S.coverage = null; return; }
     S.coverage = await api("/api/data/coverage?exchange=" + encodeURIComponent(S.exchange));
   }
-
   async function refresh() {
     try {
       await loadMeta();
@@ -430,22 +490,19 @@
         if (S.exchange && !S.coverage) await loadCoverage();
         renderData();
       }
-    } catch (err) {
-      toast(err.message || "Refresh failed");
-    }
+    } catch (err) { toast(err.message || "Refresh failed"); }
   }
 
-  async function setStrategy(name, strategy) {
+  async function patchConfig(name, mutate) {
     const raw = await api("/api/configs/" + encodeURIComponent(name) + "/raw");
     const parsed = JSON.parse(raw.content);
-    parsed.strategy = strategy || "";
+    mutate(parsed);
     await api("/api/configs/" + encodeURIComponent(name) + "/raw", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content: JSON.stringify(parsed, null, 2) }),
     });
   }
-
   function modal(title, body) {
     $("modal").hidden = false;
     $("modal").innerHTML = `<div class="modal-back" data-act="close"><div class="modal" role="dialog"><h2>${esc(title)}</h2>${body}</div></div>`;
@@ -458,12 +515,27 @@
     const act = el.dataset.act;
     const id = el.dataset.id;
     try {
-      if (act === "side") { S.side = el.dataset.id; renderTrading(); }
+      if (act === "side") { S.side = id; renderTrading(); }
+      else if (act === "pane") { S.pane = id; renderTrading(); }
+      else if (act === "pick-pair") { S.chartPair = id; S.pane = "chart"; S.candles = null; await loadCandles(); renderTrading(); }
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
       else if (act === "view-bot") { S.bot = S.bot === id ? "" : id; S.candles = null; await refresh(); await loadCandles(); }
-      else if (act === "start") { await api("/api/configs/" + encodeURIComponent(id) + "/start", { method: "POST" }); toast("Starting " + id); setTimeout(refresh, 4000); }
-      else if (act === "stop") { await api("/api/configs/" + encodeURIComponent(id) + "/stop", { method: "POST" }); toast("Stopping " + id); setTimeout(refresh, 2000); }
-      else if (act === "delete") {
+      else if (act === "start") {
+        if (el.dataset.live === "1" && !window.confirm("Start LIVE " + id + "? This config can send real orders.")) return;
+        await api("/api/configs/" + encodeURIComponent(id) + "/start", { method: "POST" });
+        toast("Starting " + id);
+        setTimeout(refresh, 4000);
+      } else if (act === "stop") {
+        await api("/api/configs/" + encodeURIComponent(id) + "/stop", { method: "POST" });
+        toast("Stopping " + id);
+        setTimeout(refresh, 2000);
+      } else if (act === "force") {
+        if (!S.bot) { toast("Select the bot that owns this trade first"); return; }
+        if (!window.confirm("Force exit " + el.dataset.pair + " on " + S.bot + "?")) return;
+        await api("/api/livebots/" + encodeURIComponent(S.bot) + "/forceexit?pair=" + encodeURIComponent(el.dataset.pair), { method: "POST" });
+        toast("Exit requested");
+        setTimeout(refresh, 1500);
+      } else if (act === "delete") {
         if (!confirm("Delete " + id + "?")) return;
         await api("/api/configs/" + encodeURIComponent(id), { method: "DELETE" });
         await refresh();
@@ -478,11 +550,13 @@
         await api("/api/configs/" + encodeURIComponent(id) + "/duplicate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ new_name: name }) });
         await refresh();
       } else if (act === "new-bot") {
-        modal("New bot config", `<form id="new-form"><label class="stack">Name<input class="field" name="name" required></label><p class="err" id="new-err"></p><button class="btn" type="submit">Create</button></form>`);
+        const opts = [`<option value="">Blank</option>`].concat(S.examples.map((ex) => `<option value="example:${esc(ex.name)}">Example · ${esc(ex.name)}</option>`), S.configs.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}</option>`)).join("");
+        modal("New bot config", `<form id="new-form"><label class="stack">Name<input class="field" name="name" required></label><label class="stack">Start from<select class="field" name="source">${opts}</select></label><p class="err" id="new-err"></p><button class="btn" type="submit">Create</button></form>`);
         $("new-form").addEventListener("submit", async (e) => {
           e.preventDefault();
+          const data = new FormData(e.target);
           try {
-            await api("/api/configs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: new FormData(e.target).get("name"), source: null }) });
+            await api("/api/configs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: data.get("name"), source: data.get("source") || null }) });
             closeModal();
             await refresh();
           } catch (err) { $("new-err").textContent = err.message; }
@@ -501,20 +575,43 @@
             await refresh();
           } catch (err) { $("edit-err").textContent = err.message; }
         });
-      } else if (act === "close") {
-        if (event.target === el) closeModal();
-      }
-    } catch (err) {
-      toast(err.message || "Action failed");
-    }
+      } else if (act === "job") {
+        const body = await api("/api/backtests/jobs/" + encodeURIComponent(id));
+        S.jobLog = (body.log || []).map((line) => (typeof line === "string" ? line : line.message || JSON.stringify(line))).join("\n");
+        renderBacktest();
+      } else if (act === "cancel-job") {
+        await api("/api/backtests/jobs/" + encodeURIComponent(id) + "/cancel", { method: "POST" });
+        toast("Cancel requested");
+        await loadJobs();
+        renderBacktest();
+      } else if (act === "result") {
+        const mae = await api("/api/backtests/" + encodeURIComponent(id) + "/mae_mfe");
+        const g = mae.global || {};
+        const regimes = Object.entries(mae.per_regime || {}).slice(0, 6).map(([name, row]) => `<div class="bot"><b>${esc(name)}</b><div class="mute">${row.total || row.n || ""} trades</div></div>`).join("");
+        S.resultHtml = `<div class="grid-2">
+          <div class="pulse"><span>Trades</span><b>${esc(g.total)}</b></div>
+          <div class="pulse"><span>Wins</span><b>${esc(g.win_count)}</b></div>
+          <div class="pulse"><span>MAE median</span><b>${esc(g.mae_median)}%</b></div>
+          <div class="pulse"><span>MFE median</span><b>${esc(g.mfe_median)}%</b></div>
+          <div class="pulse"><span>Suggested SL</span><b>${esc(mae.recommended_sl)}</b></div>
+          <div class="pulse"><span>Method</span><b>${esc(mae.method)}</b></div>
+        </div>${regimes}`;
+        renderBacktest();
+      } else if (act === "close" && event.target === el) closeModal();
+    } catch (err) { toast(err.message || "Action failed"); }
   }
 
   document.addEventListener("change", async (event) => {
-    const el = event.target.closest("[data-act=strategy]");
-    if (!el) return;
+    const strat = event.target.closest("[data-act=strategy]");
+    const auto = event.target.closest("[data-act=autostart]");
     try {
-      await setStrategy(el.dataset.id, el.value);
-      toast("Strategy saved");
+      if (strat) {
+        await patchConfig(strat.dataset.id, (cfg) => { cfg.strategy = strat.value || ""; });
+        toast("Strategy saved");
+      } else if (auto) {
+        await patchConfig(auto.dataset.id, (cfg) => { cfg.auto_start = auto.checked; });
+        toast(auto.checked ? "Auto-start on" : "Auto-start off");
+      } else return;
       await loadMeta();
     } catch (err) { toast(err.message); }
   });
@@ -538,7 +635,6 @@
       renderBacktest();
     } catch (err) { toast(err.message); }
   }
-
   async function onDownload(event) {
     event.preventDefault();
     const data = new FormData(event.target);
@@ -565,21 +661,16 @@
       timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
     }).format(new Date()) + " ICT";
   }
-
-  $("logout").onclick = () => {
-    localStorage.removeItem("VulcanTrader_token");
-    location.href = "/login";
-  };
+  $("logout").onclick = () => { localStorage.removeItem("VulcanTrader_token"); location.href = "/login"; };
   $("refresh").onclick = () => { S.candles = null; S.coverage = null; refresh(); };
   document.addEventListener("click", onClick);
   window.addEventListener("hashchange", () => { viewFromHash(); showView(); refresh(); });
-
   viewFromHash();
   shell();
   showView();
   tickClock();
   setInterval(tickClock, 1000);
-  fetch("/api/version").then((r) => r.json()).then((b) => { S.version = b.version || ""; $("ver").textContent = S.version ? "v" + S.version : ""; }).catch(() => {});
+  fetch("/api/version").then((r) => r.json()).then((b) => { $("ver").textContent = b.version ? "v" + b.version : ""; }).catch(() => {});
   refresh();
   setInterval(() => { if (S.view === "trading" || S.view === "backtester") refresh(); }, 8000);
 })();

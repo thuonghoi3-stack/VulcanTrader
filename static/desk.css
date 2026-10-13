@@ -87,6 +87,17 @@ th, td { text-align: left; padding: 8px 6px; border-top: 1px solid var(--line); 
 th { color: var(--mute); font-weight: 500; }
 .desk-only { display: none; }
 #chart { height: 280px; }
+.equity { width: 100%; height: 78px; margin-top: 8px; }
+.qbar { height: 6px; border-radius: 99px; background: #2c2823; overflow: hidden; }
+.qbar i { display: block; height: 100%; background: #6f8f86; }
+@media (max-width: 1023px) {
+  body[data-pane="fleet"] .pane-chart,
+  body[data-pane="fleet"] .pane-book { display: none; }
+  body[data-pane="chart"] .pane-fleet,
+  body[data-pane="chart"] .pane-book { display: none; }
+  body[data-pane="book"] .pane-fleet,
+  body[data-pane="book"] .pane-chart { display: none; }
+}
 .modal-back {
   position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 40;
   display: flex; align-items: flex-end; justify-content: center;
