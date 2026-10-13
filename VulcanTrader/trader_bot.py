@@ -995,6 +995,22 @@ class VulcanTraderBot(LoggingMixin):
         except Exception as e:
             logger.warning("heartbeat failed: %s", e)
 
+    def _persist_candle_book(self, book) -> None:
+        """Save this candle's entry counts for the dashboard.
+
+        One commit, and only when the counts change or 15s have passed, so a
+        fast bot loop does not rewrite the account file every cycle.
+        """
+        payload = f"{book.entry_pairs},{book.entry_long},{book.entry_short}"
+        now = datetime.now(UTC)
+        if payload == getattr(self, "_candle_book_payload", None):
+            written = getattr(self, "_candle_book_written", None)
+            if written is not None and (now - written).total_seconds() < 15:
+                return
+        self._candle_book_payload = payload
+        self._candle_book_written = now
+        KeyValueStore.store_value("candle_book", payload)
+
     def cleanup(self) -> None:
         """
         Cleanup pending resources on an already stopped bot
@@ -1167,7 +1183,8 @@ class VulcanTraderBot(LoggingMixin):
             self.strategy.analyze(self.active_pair_whitelist)
 
         try:
-            self.strategy.refresh_candle_book(self.active_pair_whitelist)
+            book = self.strategy.refresh_candle_book(self.active_pair_whitelist)
+            self._persist_candle_book(book)
         except Exception:
             logger.exception("candle book refresh failed")
 

@@ -34,6 +34,9 @@ KeyStoreKeys = Literal[
     # readers (web_portal account scan, Discord bot) can show it for accounts
     # they never attached to in-process - see trader_bot.py's startup().
     "bot_name",
+    # Latest candle signal counts: "entry_pairs,entry_long,entry_short".
+    # Written by trader_bot after analyze so the dashboard can show them.
+    "candle_book",
 ]
 
 

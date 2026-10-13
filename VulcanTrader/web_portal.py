@@ -1587,6 +1587,7 @@ class WebPortal:
             "uptime_secs": info["uptime_secs"],
             "last_heartbeat": info["last_heartbeat"],
             "starting_capital": self._starting_capital_for_account(name, info["mode"] != "live"),
+            **self._candle_book_fields(data),
         }
         open_trade_list = [t for t in trades if t.get("is_open")]
         prices: dict[str, float] = {}
@@ -1611,6 +1612,21 @@ class WebPortal:
             "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
             "messages": [],
             "logs": _tail_log_file(_find_latest_log_file(), 80),
+        }
+
+    def _candle_book_fields(self, data: dict) -> dict:
+        kv = {row.get("key"): row for row in data.get("KeyValueStore") or [] if isinstance(row, dict)}
+        raw = (kv.get("candle_book") or {}).get("string_value") or ""
+        parts = raw.split(",")
+        def num(i: int) -> int | None:
+            try:
+                return int(parts[i])
+            except (IndexError, TypeError, ValueError):
+                return None
+        return {
+            "entry_pairs": num(0),
+            "entry_long": num(1),
+            "entry_short": num(2),
         }
 
     def _config_only_dashboard(self, name: str) -> dict:

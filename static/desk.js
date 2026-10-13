@@ -303,11 +303,17 @@
     const state = st.state || (cfg && cfg.running ? "RUNNING" : "STOPPED");
     const up = Math.max(0, Math.floor(Number(st.uptime_secs) || 0));
     const upText = up ? (Math.floor(up / 3600) ? Math.floor(up / 3600) + "h " + Math.floor((up % 3600) / 60) + "m" : Math.floor(up / 60) + "m") : "";
+    const sig = (v) => v == null || v === "" ? "—" : String(v);
     return `<div class="session">
       <div><b>${esc(name)}</b><div class="mute">${esc(state)}${upText ? " · " + upText : ""} · ${esc(st.strategy || (cfg && cfg.strategy) || "no strategy")}</div></div>
       <div class="${live ? "neg" : "mute"}">${live ? "LIVE" : "Paper"}</div>
       <div><span class="mute">Hôm nay</span><div class="${cls(dayPnl)}"><b>${money(dayPnl)}</b></div><div class="mute">${dayClosed.length} đóng</div></div>
       <div><span class="mute">Đang mở</span><div class="${cls(unreal)}"><b>${money(unreal)}</b></div><div class="mute">${openTrades().length} lệnh</div></div>
+      <div class="session-book">
+        <span>Tín hiệu <b>${sig(st.entry_pairs)}</b></span>
+        <span class="pos">Long <b>${sig(st.entry_long)}</b></span>
+        <span class="neg">Short <b>${sig(st.entry_short)}</b></span>
+      </div>
     </div>`;
   }
   function markFleet() {
@@ -971,6 +977,6 @@
   setInterval(() => {
     if (S.view !== "trading" && S.view !== "backtester") return;
     S.polls = (S.polls || 0) + 1;
-    refresh({ full: S.polls % 4 === 0 });
-  }, 15000);
+    refresh({ full: S.view === "trading" ? S.polls % 12 === 0 : S.polls % 4 === 0 });
+  }, 5000);
 })();
