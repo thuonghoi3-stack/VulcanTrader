@@ -17,6 +17,8 @@
     candles: null,
     marks: [],
     ind: "",
+    cache: {},
+    cacheWl: {},
     whitelist: [],
     badPairs: {},
     userBot: false,
@@ -539,21 +541,26 @@
     }
   }
   async function loadDash() {
-    const q = S.bot ? "?bot=" + encodeURIComponent(S.bot) : "";
+    const bot = S.bot;
+    const seq = (S.dashSeq = (S.dashSeq || 0) + 1);
+    const q = "?closed_limit=40" + (bot ? "&bot=" + encodeURIComponent(bot) : "");
     const [dash, wl] = await Promise.all([
       api("/api/dashboard" + q).catch((err) => {
         S.dashError = err.message || "This bot has no trade history yet";
         return null;
       }),
-      api("/api/whitelist" + (S.bot ? "?bot=" + encodeURIComponent(S.bot) : "")).catch(() => ({ whitelist: [] })),
+      api("/api/whitelist" + (bot ? "?bot=" + encodeURIComponent(bot) : "")).catch(() => ({ whitelist: [] })),
     ]);
+    if (seq !== S.dashSeq || bot !== S.bot) return;
     if (dash) {
       S.dash = dash;
       S.dashError = "";
+      S.cache[bot || ""] = dash;
     } else if (!S.dash) {
       S.dash = { status: { state: "STOPPED", never_started: true }, open_trades: [], closed_trades: [], messages: [], logs: [] };
     }
     S.whitelist = (wl && wl.whitelist) || [];
+    S.cacheWl[bot || ""] = S.whitelist;
   }
   async function loadCandles() {
     const choices = pairChoices();
@@ -656,10 +663,16 @@
       else if (act === "nonbots") { S.showNonBots = el.checked; await refresh(); }
       else if (act === "view-bot") {
         S.userBot = true;
-        S.bot = S.bot === id ? "" : id;
+        const next = S.bot === id ? "" : id;
+        S.bot = next;
         S.candles = null;
         S.badPairs = {};
-        S.dash = { status: { state: "STOPPED" }, open_trades: [], closed_trades: [], messages: [], logs: [] };
+        S.dashSeq = (S.dashSeq || 0) + 1;
+        if (S.cache[next]) {
+          S.dash = S.cache[next];
+          S.whitelist = S.cacheWl[next] || [];
+          S.dashError = "";
+        }
         renderTrading();
         refresh({ full: false });
       }

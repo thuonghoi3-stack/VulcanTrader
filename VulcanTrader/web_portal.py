@@ -1585,15 +1585,14 @@ class WebPortal:
             exch = t.get("exchange")
             if exch and t.get("pair"):
                 by_exchange.setdefault(exch, []).append(t["pair"])
-        for exch, pairs in by_exchange.items():
-            self._prefetch_tickers_ccxt_public(exch, pairs)
+        self._warm_tickers_later(by_exchange)
 
         return {
             "status": status,
-            "open_trades": [self._attach_live_pnl(_json_safe(t)) for t in open_trade_list],
+            "open_trades": [self._attach_live_pnl(_json_safe(t), network=False) for t in open_trade_list],
             "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
             "messages": [],
-            "logs": _tail_log_file(_find_latest_log_file(), 200),
+            "logs": _tail_log_file(_find_latest_log_file(), 80),
         }
 
     def _config_only_dashboard(self, name: str) -> dict:
@@ -2725,7 +2724,27 @@ class WebPortal:
         finally:
             executor.shutdown(wait=False)
 
-    def _current_price_ccxt_public(self, exchange_name: str, pair: str) -> float | None:
+    def _warm_tickers_later(self, by_exchange: dict[str, list[str]]) -> None:
+        """Fill the price cache off the request thread.
+
+        Doing this inline made switching bots wait on the exchange (several
+        seconds, sometimes one timeout per open pair). The dashboard returns
+        the stored profit immediately and picks up cached prices next poll.
+        """
+        if not by_exchange or getattr(self, "_ticker_warm_busy", False):
+            return
+        self._ticker_warm_busy = True
+
+        def run() -> None:
+            try:
+                for exch, pairs in by_exchange.items():
+                    self._prefetch_tickers_ccxt_public(exch, pairs)
+            finally:
+                self._ticker_warm_busy = False
+
+        threading.Thread(target=run, name="ticker-warm", daemon=True).start()
+
+    def _current_price_ccxt_public(self, exchange_name: str, pair: str, allow_fetch: bool = True) -> float | None:
         """Cached, keyless ticker read via a plain ccxt client - used only
         for pricing another bot's open trades (see _account_dashboard),
         where there is no live, already-authenticated Exchange object to
@@ -2736,6 +2755,8 @@ class WebPortal:
         cached = self._ticker_cache.get(key)
         if cached is not None and now - cached[0] < self.TICKER_CACHE_TTL:
             return cached[1]
+        if not allow_fetch:
+            return cached[1] if cached else None
         try:
             client = self._get_ccxt_public_client(exchange_name)
             if client is None:
@@ -2780,14 +2801,14 @@ class WebPortal:
         except Exception:
             logger.debug("batch ticker prefetch failed for %s", exchange_name, exc_info=True)
 
-    def _current_price(self, pair: str, exchange_name: str | None) -> float | None:
+    def _current_price(self, pair: str, exchange_name: str | None, *, network: bool = True) -> float | None:
         """Best-effort current price for ``pair``: reuses the attached bot's
         own live exchange connection when this portal IS that bot's process
         (cheapest, no extra client - the bot already polls this exchange
         every cycle), otherwise falls back to a cached public ccxt ticker
         (see _current_price_ccxt_public) for pricing another bot's trades
         from its account-JSON snapshot."""
-        if self._is_live_bot():
+        if network and self._is_live_bot():
             try:
                 exch = getattr(self.bot, "exchange", None)
                 if exch is not None and pair in getattr(exch, "markets", {}):
@@ -2799,9 +2820,9 @@ class WebPortal:
                 logger.debug("live exchange ticker fetch failed for %s", pair, exc_info=True)
         if not exchange_name:
             return None
-        return self._current_price_ccxt_public(exchange_name, pair)
+        return self._current_price_ccxt_public(exchange_name, pair, allow_fetch=network)
 
-    def _attach_live_pnl(self, trade: dict) -> dict:
+    def _attach_live_pnl(self, trade: dict, *, network: bool = True) -> dict:
         """Overwrite an OPEN trade dict's profit_abs/profit_ratio with a
         live mark-to-market computed from a fresh ticker, and attach
         current_rate - both the attached-bot and cross-account dashboard
@@ -2819,7 +2840,7 @@ class WebPortal:
             open_rate = float(trade.get("open_rate") or 0)
             if amount <= 0 or open_rate <= 0:
                 return trade
-            price = self._current_price(trade.get("pair", ""), trade.get("exchange"))
+            price = self._current_price(trade.get("pair", ""), trade.get("exchange"), network=network)
             if price is None:
                 return trade
 
