@@ -791,7 +791,15 @@
         if (el.dataset.live === "1" && !window.confirm("Start LIVE " + id + "? This config can send real orders.")) return;
         await api("/api/configs/" + encodeURIComponent(id) + "/start", { method: "POST" });
         toast("Starting " + id);
-        setTimeout(refresh, 4000);
+        setTimeout(async () => {
+          try {
+            const body = await api("/api/dashboard?closed_limit=1");
+            const lines = (body.logs || []).map(logText);
+            const err = [...lines].reverse().find((line) => /ConfigurationError|initialisation failed|Could not launch/.test(line));
+            if (err) toast(err.replace(/^.*ConfigurationError:\s*/, "").slice(0, 180));
+          } catch (e) { /* the running-state refresh still happens below */ }
+          refresh({ full: true });
+        }, 5000);
       } else if (act === "stop") {
         await api("/api/configs/" + encodeURIComponent(id) + "/stop", { method: "POST" });
         toast("Stopping " + id);

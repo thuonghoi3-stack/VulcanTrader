@@ -1410,7 +1410,14 @@ class WebPortal:
         cross-process graceful signal on Windows, so a stop-file it is."""
         path = self._find_account_db(name)
         if path is None:
-            raise HTTPException(status_code=404, detail=f"No account database named {name!r}")
+            # Init can fail before the account file exists. The process still
+            # watches <account>.json.stop, so write that and let it exit.
+            path = self._accounts_dir() / f"{name}.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stop = path.with_name(path.name + ".stop")
+            stop.write_text("", encoding="utf-8")
+            logger.info("Stop file written for %s before an account DB existed", name)
+            return {"requested": True, "account": name, "pending_db": True}
         info = self._account_bot_info(path)
         if info is None:
             raise HTTPException(status_code=502, detail="Account DB malformed")
@@ -3171,6 +3178,7 @@ class WebPortal:
             raise HTTPException(status_code=400, detail=f"Config unreadable: {exc}") from exc
         if not isinstance(raw, dict):
             raise HTTPException(status_code=400, detail="Config is not a JSON object")
+        raw = self._ensure_binance_futures_pricing(p, raw)
 
         strategy = raw.get("strategy")
         if not strategy:
@@ -3233,6 +3241,30 @@ class WebPortal:
             "started": True, "config": name, "strategy": strategy,
             "port": port, "db_url": db_url, "account_name": account_name,
         }
+
+    def _ensure_binance_futures_pricing(self, path: Path, raw: dict) -> dict:
+        """Binance futures tickers have no bid/ask, so order-book pricing is required.
+
+        Without it, startup raises ``Ticker pricing not available for Binance``
+        and the process retries forever without ever looking like it started.
+        """
+        exchange = ((raw.get("exchange") or {}).get("name") or "").lower()
+        if raw.get("trading_mode") != "futures" or exchange != "binance":
+            return raw
+        changed = False
+        for key in ("entry_pricing", "exit_pricing"):
+            block = raw.get(key)
+            if not isinstance(block, dict):
+                block = {}
+                raw[key] = block
+            if not block.get("use_order_book"):
+                block["use_order_book"] = True
+                block.setdefault("order_book_top", 1)
+                changed = True
+        if changed:
+            path.write_text(json.dumps(raw, indent=4) + "\n", encoding="utf-8")
+            logger.info("Enabled order-book pricing on %s for Binance futures", path.name)
+        return raw
 
     def _stop_config_bot(self, name: str) -> dict:
         """Stop the trader_bot process owned by this config, via the same
