@@ -34,6 +34,8 @@ class CandleBook:
     open_short: int
     open_pnl: float
     free_slots: int | None
+    long_pairs: tuple[str, ...] = ()
+    short_pairs: tuple[str, ...] = ()
 
 
 EMPTY_CANDLE_BOOK = CandleBook(None, 0, 0, 0, 0, 0, 0, 0.0, None)
@@ -85,8 +87,8 @@ def _open_side(strategy: IStrategy, book: CandleBook) -> CandleBook:
 
 def refresh_candle_book(strategy: IStrategy, pairs: list[str]) -> CandleBook:
     """Count entry signals on the whitelist for the candle just analyzed."""
-    longs = 0
-    shorts = 0
+    longs: list[str] = []
+    shorts: list[str] = []
     candle: datetime | None = None
     provider = getattr(strategy, "dp", None)
     for pair in pairs:
@@ -100,19 +102,21 @@ def refresh_candle_book(strategy: IStrategy, pairs: list[str]) -> CandleBook:
             candle = raw.to_pydatetime() if hasattr(raw, "to_pydatetime") else raw
         signal, _ = strategy.get_entry_signal(pair, strategy.timeframe, frame)
         if signal is SignalDirection.LONG:
-            longs += 1
+            longs.append(pair)
         elif signal is SignalDirection.SHORT:
-            shorts += 1
+            shorts.append(pair)
     book = CandleBook(
         candle=candle,
-        entry_pairs=longs + shorts,
-        entry_long=longs,
-        entry_short=shorts,
+        entry_pairs=len(longs) + len(shorts),
+        entry_long=len(longs),
+        entry_short=len(shorts),
         open_slots=0,
         open_long=0,
         open_short=0,
         open_pnl=0.0,
         free_slots=None,
+        long_pairs=tuple(longs),
+        short_pairs=tuple(shorts),
     )
     return _open_side(strategy, book)
 

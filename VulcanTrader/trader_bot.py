@@ -1001,7 +1001,17 @@ class VulcanTraderBot(LoggingMixin):
         One commit, and only when the counts change or 15s have passed, so a
         fast bot loop does not rewrite the account file every cycle.
         """
-        payload = f"{book.entry_pairs},{book.entry_long},{book.entry_short}"
+        import json
+        payload = json.dumps(
+            {
+                "p": book.entry_pairs,
+                "l": book.entry_long,
+                "s": book.entry_short,
+                "long": list(book.long_pairs)[:80],
+                "short": list(book.short_pairs)[:80],
+            },
+            separators=(",", ":"),
+        )
         now = datetime.now(UTC)
         if payload == getattr(self, "_candle_book_payload", None):
             written = getattr(self, "_candle_book_written", None)

@@ -304,6 +304,11 @@
     const up = Math.max(0, Math.floor(Number(st.uptime_secs) || 0));
     const upText = up ? (Math.floor(up / 3600) ? Math.floor(up / 3600) + "h " + Math.floor((up % 3600) / 60) + "m" : Math.floor(up / 60) + "m") : "";
     const sig = (v) => v == null || v === "" ? "—" : String(v);
+    const signals = Array.isArray(st.signals) ? st.signals : [];
+    const chips = signals.map((s) => {
+      const side = s.side === "short" ? "neg" : "pos";
+      return `<button type="button" class="sig ${side}" data-act="pick-pair" data-id="${esc(s.pair)}" title="${esc(s.pair)}">${esc(pairLabel(s.pair))}</button>`;
+    }).join("");
     return `<div class="session">
       <div><b>${esc(name)}</b><div class="mute">${esc(state)}${upText ? " · " + upText : ""} · ${esc(st.strategy || (cfg && cfg.strategy) || "no strategy")}</div></div>
       <div class="${live ? "neg" : "mute"}">${live ? "LIVE" : "Paper"}</div>
@@ -314,6 +319,7 @@
         <span class="pos">Long <b>${sig(st.entry_long)}</b></span>
         <span class="neg">Short <b>${sig(st.entry_short)}</b></span>
       </div>
+      ${chips ? `<div class="session-signals">${chips}</div>` : ""}
     </div>`;
   }
   function markFleet() {
@@ -413,13 +419,22 @@
     }).join("");
     return line("Best", rows.slice(0, 8)) + line("Worst", rows.slice().reverse().slice(0, 8));
   }
+  function pairLabel(pair) {
+    const text = String(pair || "");
+    const slash = text.indexOf("/");
+    if (slash < 0) return text;
+    return text.slice(0, slash) + "/" + text.slice(slash + 1).split(":")[0];
+  }
   function pairChoices() {
+    const signals = ((S.dash && S.dash.status && S.dash.status.signals) || []).map((s) => s.pair);
     const ranked = [...new Set([
+      S.chartPair,
+      ...signals,
       ...openTrades().map((t) => t.pair),
       ...(S.whitelist || []),
       ...closedTrades().map((t) => t.pair),
     ].filter(Boolean))];
-    const good = ranked.filter((p) => !S.badPairs[p + "|" + S.tf]);
+    const good = ranked.filter((p) => p === S.chartPair || !S.badPairs[p + "|" + S.tf]);
     return good.length ? good : ranked;
   }
   function logText(line) {

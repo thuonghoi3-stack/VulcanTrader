@@ -80,6 +80,17 @@ label.stack { display: block; color: var(--dim); font-size: 13px; }
 .session b { font-weight: 600; }
 .session-book { grid-column: 1 / -1; display: flex; gap: 16px; font-size: 14px; }
 .session-book b { font-variant-numeric: tabular-nums; }
+.session-signals { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.session-signals .sig {
+  border-radius: 999px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  cursor: pointer;
+}
+.session-signals .sig.pos { color: var(--pos); border: 1px solid rgba(63, 143, 98, 0.45); }
+.session-signals .sig.neg { color: var(--neg); border: 1px solid rgba(163, 59, 50, 0.45); }
 @media (max-width: 720px) {
   .session { grid-template-columns: 1fr 1fr; }
 }

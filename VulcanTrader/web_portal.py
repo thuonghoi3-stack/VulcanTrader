@@ -1617,17 +1617,30 @@ class WebPortal:
     def _candle_book_fields(self, data: dict) -> dict:
         kv = {row.get("key"): row for row in data.get("KeyValueStore") or [] if isinstance(row, dict)}
         raw = (kv.get("candle_book") or {}).get("string_value") or ""
+        empty = {"entry_pairs": None, "entry_long": None, "entry_short": None, "signals": []}
+        if not raw:
+            return empty
+        if raw.startswith("{"):
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                return empty
+            longs = [p for p in (obj.get("long") or []) if isinstance(p, str)]
+            shorts = [p for p in (obj.get("short") or []) if isinstance(p, str)]
+            return {
+                "entry_pairs": obj.get("p"),
+                "entry_long": obj.get("l"),
+                "entry_short": obj.get("s"),
+                "signals": [{"pair": p, "side": "long"} for p in longs]
+                + [{"pair": p, "side": "short"} for p in shorts],
+            }
         parts = raw.split(",")
         def num(i: int) -> int | None:
             try:
                 return int(parts[i])
             except (IndexError, TypeError, ValueError):
                 return None
-        return {
-            "entry_pairs": num(0),
-            "entry_long": num(1),
-            "entry_short": num(2),
-        }
+        return {"entry_pairs": num(0), "entry_long": num(1), "entry_short": num(2), "signals": []}
 
     def _config_only_dashboard(self, name: str) -> dict:
         """A config that has never been started has no account database yet."""
