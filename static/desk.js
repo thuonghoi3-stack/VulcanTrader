@@ -494,7 +494,7 @@
     const span = max - min || 1;
     const points = pts.map((v, i) => ((i / (pts.length - 1)) * 280).toFixed(1) + "," + (70 - ((v - min) / span) * 64).toFixed(1)).join(" ");
     svg.hidden = false;
-    svg.innerHTML = `<polyline fill="none" stroke="#e7a15a" stroke-width="2" points="${points}"/>`;
+    svg.innerHTML = `<polyline fill="none" stroke="#8b7cf6" stroke-width="2" points="${points}"/>`;
     note.textContent = "Closed equity · max DD " + money(-maxDd);
   }
 
@@ -519,21 +519,22 @@
     });
     if (!chart) {
       chart = LightweightCharts.createChart(el, {
-        height: 280,
-        layout: { background: { color: "#1b1814" }, textColor: "#a8a097" },
-        grid: { vertLines: { color: "#2c2823" }, horzLines: { color: "#2c2823" } },
-        timeScale: { timeVisible: true },
+        height: el.clientHeight || 360,
+        layout: { background: { color: "#1e1e2e" }, textColor: "#a9a3bd" },
+        grid: { vertLines: { color: "#313244" }, horzLines: { color: "#313244" } },
+        timeScale: { timeVisible: true, borderColor: "#313244" },
+        rightPriceScale: { borderColor: "#313244" },
       });
-      series = chart.addCandlestickSeries({ upColor: "#3f8f62", downColor: "#a33b32", borderVisible: false, wickUpColor: "#3f8f62", wickDownColor: "#a33b32" });
+      series = chart.addCandlestickSeries({ upColor: "#7ee2a8", downColor: "#f4879b", borderVisible: false, wickUpColor: "#7ee2a8", wickDownColor: "#f4879b" });
       new ResizeObserver(() => chart.applyOptions({ width: el.clientWidth })).observe(el);
     }
     series.setData(dedup.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
     const markers = [];
     (S.marks || []).forEach((t) => {
       const openAt = candleTime(t.open_date);
-      if (openAt != null) markers.push({ time: openAt, position: t.is_short ? "aboveBar" : "belowBar", color: t.is_short ? "#a33b32" : "#3f8f62", shape: t.is_short ? "arrowDown" : "arrowUp", text: t.is_short ? "S" : "L" });
+      if (openAt != null) markers.push({ time: openAt, position: t.is_short ? "aboveBar" : "belowBar", color: t.is_short ? "#f4879b" : "#7ee2a8", shape: t.is_short ? "arrowDown" : "arrowUp", text: t.is_short ? "S" : "L" });
       const closeAt = candleTime(t.close_date);
-      if (closeAt != null) markers.push({ time: closeAt, position: "aboveBar", color: "#c4a15a", shape: "circle", text: "X" });
+      if (closeAt != null) markers.push({ time: closeAt, position: "aboveBar", color: "#e3b341", shape: "circle", text: "X" });
     });
     markers.sort((a, b) => a.time - b.time || (a.text === "X" ? 1 : -1));
     const uniq = [];
@@ -903,7 +904,7 @@
           const max = Math.max(...vals);
           const span = max - min || 1;
           const points = vals.map((v, i) => ((i / (vals.length - 1)) * 280).toFixed(1) + "," + (70 - ((v - min) / span) * 64).toFixed(1)).join(" ");
-          spark = `<svg class="equity" viewBox="0 0 280 78"><polyline fill="none" stroke="#e7a15a" stroke-width="2" points="${points}"/></svg>`;
+          spark = `<svg class="equity" viewBox="0 0 280 78"><polyline fill="none" stroke="#8b7cf6" stroke-width="2" points="${points}"/></svg>`;
         }
         S.resultHtml = `<div class="grid-2">
           <div class="pulse"><span>Trades</span><b>${esc(g.total)}</b></div>
