@@ -203,7 +203,8 @@ class IStrategy(ABC, HyperStrategyMixin):
         ``free_slots``: room left under ``max_open_trades``, or None if uncapped.
 
         Call this from confirm_trade_entry, custom_stake_amount, custom_exit
-        or adjust_trade_position. Not from populate_entry_trend.
+        or adjust_trade_position. Works in live and backtest. Not from
+        populate_entry_trend.
         """
         from VulcanTrader.strategy.candle_book import current_candle_book
 

@@ -5,6 +5,10 @@ Strategies call ``self.candle_book()`` from ``confirm_trade_entry``,
 Those run after every pair has been analyzed, so the entry counts are
 this candle, not a partial pass. ``populate_entry_trend`` is too early:
 other pairs do not have this candle's signal yet.
+
+Live mode fills the book after ``analyze()``. Backtest fills it at the
+start of each simulated candle, before any pair is entered, using the
+same signal rules as the engine.
 """
 
 from __future__ import annotations
@@ -83,6 +87,33 @@ def _open_side(strategy: IStrategy, book: CandleBook) -> CandleBook:
         open_pnl=round(pnl, 8),
         free_slots=free,
     )
+
+
+def publish_signal_book(
+    strategy: IStrategy,
+    candle: datetime | None,
+    long_pairs: list[str],
+    short_pairs: list[str],
+) -> CandleBook:
+    """Install this candle's entry lists. Backtest calls this once per candle.
+
+    Open slots and PnL stay live: ``candle_book()`` reads them at call time.
+    """
+    book = CandleBook(
+        candle=candle,
+        entry_pairs=len(long_pairs) + len(short_pairs),
+        entry_long=len(long_pairs),
+        entry_short=len(short_pairs),
+        open_slots=0,
+        open_long=0,
+        open_short=0,
+        open_pnl=0.0,
+        free_slots=None,
+        long_pairs=tuple(long_pairs),
+        short_pairs=tuple(short_pairs),
+    )
+    strategy._candle_book = book
+    return book
 
 
 def refresh_candle_book(strategy: IStrategy, pairs: list[str]) -> CandleBook:

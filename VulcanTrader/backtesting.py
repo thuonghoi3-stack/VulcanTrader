@@ -1572,6 +1572,31 @@ class Backtesting:
             return exiting_dir
         return None
 
+    def _publish_candle_book(self, current_time: datetime, pairs: list[str], data: dict, indexes: dict) -> None:
+        """Tell the strategy how many pairs signal on this candle before entries run."""
+        from VulcanTrader.strategy.candle_book import publish_signal_book
+
+        longs: list[str] = []
+        shorts: list[str] = []
+        for pair in pairs:
+            row = self.validate_row(data, pair, indexes[pair], current_time)
+            if not row:
+                continue
+            row_date = row[DATE_IDX]
+            if hasattr(row_date, "to_pydatetime"):
+                row_date = row_date.to_pydatetime()
+            if getattr(row_date, "tzinfo", None) is not None:
+                row_date = row_date.replace(tzinfo=None)
+            stamp = current_time.replace(tzinfo=None) if current_time.tzinfo else current_time
+            if row_date != stamp:
+                continue
+            direction = self.check_for_trade_entry(row)
+            if direction == "long":
+                longs.append(pair)
+            elif direction == "short":
+                shorts.append(pair)
+        publish_signal_book(self.strategy, current_time, longs, shorts)
+
     def get_detail_data(self, pair: str, row: tuple) -> list[tuple] | None:
         """
         Spread into detail data
@@ -1657,6 +1682,7 @@ class Backtesting:
             strategy_safe_wrapper(self.strategy.bot_loop_start, supress_error=True)(
                 current_time=current_time
             )
+            self._publish_candle_book(current_time, pairs, data, indexes)
             pair_detail_cache: dict[str, list[tuple]] = {}
             pair_tradedir_cache: dict[str, LongShort | None] = {}
             pairs_with_open_trades = [t.pair for t in LocalTrade.bt_trades_open]

@@ -1773,6 +1773,28 @@ def _joint_multi_pair_backtest(
         # entry order, so a slot they free is available to later pairs this
         # same candle), then flat pairs in whitelist order.
         ordered = list(dict.fromkeys(open_order + pair_whitelist))
+        signal_long: list[str] = []
+        signal_short: list[str] = []
+        for pair in pair_whitelist:
+            p = pair_states[pair]
+            idx = p.row_idx
+            if idx >= p.n or p.dates[idx] != ts:
+                continue
+            direction = entry_dir(p, idx)
+            if direction == "long":
+                signal_long.append(pair)
+            elif direction == "short":
+                signal_short.append(pair)
+        try:
+            from VulcanTrader.strategy.candle_book import publish_signal_book
+            publish_signal_book(
+                strategy,
+                pd.Timestamp(ts).tz_localize("UTC").to_pydatetime(),
+                signal_long,
+                signal_short,
+            )
+        except Exception:
+            logger.debug("candle book publish failed", exc_info=True)
         for pair in ordered:
             p = pair_states[pair]
             idx = p.row_idx
