@@ -196,6 +196,131 @@ def _trade_to_dict(trade: Any) -> dict:
     return out
 
 
+def _trade_field(trade: Any, *names: str) -> Any:
+    for name in names:
+        value = trade.get(name) if isinstance(trade, dict) else getattr(trade, name, None)
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _trade_profit(trade: Any) -> float:
+    value = _trade_field(trade, "close_profit_abs", "profit_abs")
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _ict_stamp(value: Any) -> tuple[str, str]:
+    """Return (YYYY-MM-DD, YYYY-MM) in Asia/Ho_Chi_Minh."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    if isinstance(value, datetime):
+        dt = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            return "—", "—"
+        try:
+            dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            day = text[:10] or "—"
+            return day, day[:7]
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+    local = dt.astimezone(ZoneInfo("Asia/Ho_Chi_Minh"))
+    day = local.date().isoformat()
+    return day, day[:7]
+
+
+def _closed_trade_stats(trades: list) -> dict:
+    """Aggregates over every closed trade. The desk list stays capped."""
+    ordered = sorted(trades, key=lambda trade: str(_trade_field(trade, "close_date") or ""))
+    equity = 0.0
+    peak = 0.0
+    max_dd = 0.0
+    points: list[float] = []
+    wins = 0
+    losses = 0
+    gross_profit = 0.0
+    gross_loss = 0.0
+    days: dict[str, dict] = {}
+    months: dict[str, dict] = {}
+    pairs: dict[str, dict] = {}
+
+    def bucket(store: dict[str, dict], key: str, profit: float) -> None:
+        row = store.get(key)
+        if row is None:
+            row = {"key": key, "n": 0, "pnl": 0.0, "wins": 0, "gp": 0.0, "gl": 0.0}
+            store[key] = row
+        row["n"] += 1
+        row["pnl"] += profit
+        if profit > 0:
+            row["wins"] += 1
+            row["gp"] += profit
+        elif profit < 0:
+            row["gl"] += abs(profit)
+
+    for trade in ordered:
+        profit = _trade_profit(trade)
+        equity += profit
+        peak = max(peak, equity)
+        max_dd = max(max_dd, peak - equity)
+        points.append(round(equity, 4))
+        if profit > 0:
+            wins += 1
+            gross_profit += profit
+        elif profit < 0:
+            losses += 1
+            gross_loss += abs(profit)
+        day, month = _ict_stamp(_trade_field(trade, "close_date"))
+        bucket(days, day, profit)
+        bucket(months, month, profit)
+        pair = str(_trade_field(trade, "pair") or "—")
+        bucket(pairs, pair, profit)
+
+    if len(points) > 240:
+        step = (len(points) - 1) / 239
+        points = [points[min(len(points) - 1, int(i * step))] for i in range(240)]
+    count = len(ordered)
+    if gross_loss:
+        profit_factor = round(gross_profit / gross_loss, 4)
+    elif gross_profit:
+        profit_factor = None
+    else:
+        profit_factor = 0.0
+
+    def dump(store: dict[str, dict], reverse_key: bool) -> list[dict]:
+        rows = sorted(store.values(), key=lambda row: row["key"], reverse=reverse_key)
+        for row in rows:
+            row["pnl"] = round(row["pnl"], 4)
+            row["gp"] = round(row["gp"], 4)
+            row["gl"] = round(row["gl"], 4)
+        return rows
+
+    pair_rows = sorted(pairs.values(), key=lambda row: row["pnl"], reverse=True)
+    for row in pair_rows:
+        row["pnl"] = round(row["pnl"], 4)
+        row["gp"] = round(row["gp"], 4)
+        row["gl"] = round(row["gl"], 4)
+    return {
+        "trades": count,
+        "wins": wins,
+        "losses": losses,
+        "pnl": round(equity, 4),
+        "max_dd": round(max_dd, 4),
+        "avg": round(equity / count, 4) if count else 0.0,
+        "win_rate": round((wins / count) * 100, 4) if count else 0.0,
+        "profit_factor": profit_factor,
+        "equity": points,
+        "days": dump(days, True),
+        "months": dump(months, True),
+        "pairs": pair_rows,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
@@ -951,7 +1076,8 @@ class WebPortal:
                 return self._account_dashboard(bot, closed_limit)
             status = api_status()
             open_trades = self._get_open_trades()
-            closed_trades = self._get_closed_trades(closed_limit)
+            closed_all = self._get_closed_trades(None)
+            closed_trades = closed_all[-closed_limit:] if closed_limit and closed_limit > 0 else closed_all
             with self._lock:
                 messages = list(self._messages)[-msg_limit:]
             if self.bot is not None and hasattr(self.bot, "state"):
@@ -962,6 +1088,7 @@ class WebPortal:
                 "status": status,
                 "open_trades": [self._attach_live_pnl(_trade_to_dict(t)) for t in open_trades],
                 "closed_trades": [_trade_to_dict(t) for t in closed_trades],
+                "stats": _closed_trade_stats(closed_all),
                 "messages": messages,
                 "logs": logs,
             }
@@ -1174,18 +1301,22 @@ class WebPortal:
             logger.debug("get_open_trades failed", exc_info=True)
             return []
 
-    def _get_closed_trades(self, limit: int) -> list:
+    def _get_closed_trades(self, limit: int | None) -> list:
         if not self._is_live_bot():
-            return self._trades_from_json(is_open=False)[-limit:]
-        try:
-            from VulcanTrader.persistence import Trade
+            rows = self._trades_from_json(is_open=False)
+        else:
             try:
-                return list(Trade.get_trades_proxy(is_open=False))[-limit:]
+                from VulcanTrader.persistence import Trade
+                try:
+                    rows = list(Trade.get_trades_proxy(is_open=False))
+                except Exception:
+                    rows = [t for t in Trade.get_trades([]) if not t.is_open]
             except Exception:
-                return [t for t in Trade.get_trades([]) if not t.is_open][-limit:]
-        except Exception:
-            logger.debug("get_closed_trades failed", exc_info=True)
-            return []
+                logger.debug("get_closed_trades failed", exc_info=True)
+                return []
+        if not limit or limit < 0:
+            return rows
+        return rows[-int(limit):]
 
     def _find_db_json(self) -> "Path | None":
         """Locate the bot's JSON trade database file for standalone/webserver mode."""
@@ -1590,6 +1721,8 @@ class WebPortal:
             **self._candle_book_fields(data),
         }
         open_trade_list = [t for t in trades if t.get("is_open")]
+        closed_all = [t for t in trades if not t.get("is_open")]
+        closed_shown = closed_all[-closed_limit:] if closed_limit and closed_limit > 0 else closed_all
         prices: dict[str, float] = {}
         by_exchange: dict[str, list[str]] = {}
         for t in open_trade_list:
@@ -1609,7 +1742,8 @@ class WebPortal:
         return {
             "status": status,
             "open_trades": [_priced(t) for t in open_trade_list],
-            "closed_trades": [_json_safe(t) for t in trades if not t.get("is_open")][-closed_limit:],
+            "closed_trades": [_json_safe(t) for t in closed_shown],
+            "stats": _closed_trade_stats(closed_all),
             "messages": [],
             "logs": _tail_log_file(_find_latest_log_file(), 80),
         }

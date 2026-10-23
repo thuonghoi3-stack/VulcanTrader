@@ -226,11 +226,15 @@
     return `<span class="qbar"><i style="width:${Math.max(0, Math.min(100, Number(n) || 0)).toFixed(0)}%"></i></span>`;
   }
 
+  function tradeStats() { return (S.dash && S.dash.stats) || null; }
   function renderTrading() {
     const open = openTrades();
     const closed = closedTrades();
+    const stats = tradeStats();
     const unreal = open.reduce((s, t) => s + profitAbs(t), 0);
-    const { maxDd, pnl } = curve(closed);
+    const curved = stats ? null : curve(closed);
+    const maxDd = stats ? Number(stats.max_dd) || 0 : curved.maxDd;
+    const pnl = stats ? Number(stats.pnl) || 0 : curved.pnl;
     const running = S.configs.filter((c) => c.running).length;
     const crashed = S.configs.filter((c) => c.crashed).length;
     const live = S.configs.filter((c) => c.running && !c.dry_run).length;
@@ -248,9 +252,9 @@
     paint("session", sessionHtml());
 
     if (S.side === "bots") paint("fleet", botList());
-    else if (S.side === "metrics") paint("fleet", metricsHtml(closed, pnl, maxDd));
-    else if (S.side === "periods") paint("fleet", periodHtml(closed));
-    else if (S.side === "pairs") paint("fleet", pairHtml(closed));
+    else if (S.side === "metrics") paint("fleet", metricsHtml(closed, pnl, maxDd, stats));
+    else if (S.side === "periods") paint("fleet", periodHtml(closed, stats));
+    else if (S.side === "pairs") paint("fleet", pairHtml(closed, stats));
     else paint("fleet", logHtml());
     markFleet();
 
@@ -270,7 +274,7 @@
       const base = S.error || (S.candles ? (S.candles.timeframe || S.tf) + " · " + ((S.candles.candles || []).length) + " bars" : "loading");
       note.textContent = skipped.length ? base + " · no data: " + skipped.slice(0, 4).join(", ") : base;
     }
-    drawEquity(closed);
+    drawEquity(closed, stats);
     const fresh = (S.dash && S.dash.status && S.dash.status.never_started) || S.dashError;
     const hint = fresh ? `<p class="mute">${esc(S.dashError || "Chưa chạy lần nào. Chọn strategy, rồi bấm Start. Chưa có lệnh.")}</p>` : "";
     paint("book", hint + bookHtml(open, closed));
@@ -369,22 +373,34 @@
     }).join("");
   }
 
-  function metricsHtml(closed, pnl, maxDd) {
-    const wins = closed.filter((t) => profitAbs(t) > 0);
-    const losses = closed.filter((t) => profitAbs(t) < 0);
-    const gp = wins.reduce((s, t) => s + profitAbs(t), 0);
-    const gl = Math.abs(losses.reduce((s, t) => s + profitAbs(t), 0));
-    const pf = gl ? gp / gl : gp ? Infinity : 0;
-    const wr = closed.length ? (wins.length / closed.length) * 100 : 0;
+  function metricsHtml(closed, pnl, maxDd, stats) {
+    const wins = stats ? Number(stats.wins) || 0 : closed.filter((t) => profitAbs(t) > 0).length;
+    const losses = stats ? Number(stats.losses) || 0 : closed.filter((t) => profitAbs(t) < 0).length;
+    const count = stats ? Number(stats.trades) || 0 : closed.length;
+    const pf = stats
+      ? (stats.profit_factor == null ? Infinity : Number(stats.profit_factor) || 0)
+      : (() => {
+        const gp = closed.filter((t) => profitAbs(t) > 0).reduce((s, t) => s + profitAbs(t), 0);
+        const gl = Math.abs(closed.filter((t) => profitAbs(t) < 0).reduce((s, t) => s + profitAbs(t), 0));
+        return gl ? gp / gl : gp ? Infinity : 0;
+      })();
+    const wr = stats ? Number(stats.win_rate) || 0 : (count ? (wins / count) * 100 : 0);
     const cells = [
-      ["Win rate", pct(wr)], ["Trades", String(closed.length)], ["PnL", money(pnl)],
+      ["Win rate", pct(wr)], ["Trades", String(count)], ["PnL", money(pnl)],
       ["Profit factor", Number.isFinite(pf) ? pf.toFixed(2) : "∞"],
-      ["Max DD", money(-maxDd)], ["Avg trade", money(closed.length ? pnl / closed.length : 0)],
-      ["Wins", String(wins.length)], ["Losses", String(losses.length)],
+      ["Max DD", money(-maxDd)], ["Avg trade", money(count ? pnl / count : 0)],
+      ["Wins", String(wins)], ["Losses", String(losses)],
     ];
     return `<div class="grid-2">${cells.map(([k, v]) => `<div class="pulse"><span>${k}</span><b class="${cls(String(v).includes("−") ? -1 : 1)}">${esc(v)}</b></div>`).join("")}</div>`;
   }
-  function periodHtml(closed) {
+  function periodRows(rows) {
+    return (rows || []).map((row) => [row.key, row]);
+  }
+  function periodHtml(closed, stats) {
+    if (stats) {
+      const block = (title, rows) => `<h3>${title}</h3>` + (rows.length ? rows.map(([key, row]) => `<div class="bot"><b>${esc(key)}</b><div class="mute">${row.n} trades · win ${row.n ? Math.round((row.wins / row.n) * 100) : 0}%</div><div class="${cls(row.pnl)}">${money(row.pnl)}</div></div>`).join("") : `<p class="mute">No closed trades yet.</p>`);
+      return block("Ngày (ICT)", periodRows(stats.days)) + block("Tháng", periodRows(stats.months));
+    }
     const months = new Map();
     const days = new Map();
     closed.forEach((t) => {
@@ -399,25 +415,28 @@
       add(days, day);
     });
     const block = (title, rows) => `<h3>${title}</h3>` + (rows.length ? rows.map(([key, row]) => `<div class="bot"><b>${esc(key)}</b><div class="mute">${row.n} trades · win ${row.n ? Math.round((row.wins / row.n) * 100) : 0}%</div><div class="${cls(row.pnl)}">${money(row.pnl)}</div></div>`).join("") : `<p class="mute">No closed trades yet.</p>`);
-    const dayRows = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 7);
-    const monthRows = [...months.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, 8);
-    return block("7 ngày (ICT)", dayRows) + block("Tháng", monthRows);
+    const dayRows = [...days.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+    const monthRows = [...months.entries()].sort((a, b) => b[0].localeCompare(a[0]));
+    return block("Ngày (ICT)", dayRows) + block("Tháng", monthRows);
   }
-  function pairHtml(closed) {
-    const buckets = new Map();
-    closed.forEach((t) => {
-      const row = buckets.get(t.pair) || { n: 0, pnl: 0, gp: 0, gl: 0 };
-      const p = profitAbs(t);
-      row.n += 1; row.pnl += p; if (p > 0) row.gp += p; else row.gl += Math.abs(p);
-      buckets.set(t.pair, row);
-    });
-    const rows = [...buckets.entries()].sort((a, b) => b[1].pnl - a[1].pnl);
+  function pairHtml(closed, stats) {
+    const fromStats = stats && Array.isArray(stats.pairs) ? stats.pairs.map((row) => [row.key, row]) : null;
+    let rows = fromStats;
+    if (!rows) {
+      const buckets = new Map();
+      closed.forEach((t) => {
+        const row = buckets.get(t.pair) || { n: 0, pnl: 0, gp: 0, gl: 0 };
+        const p = profitAbs(t);
+        row.n += 1; row.pnl += p; if (p > 0) row.gp += p; else row.gl += Math.abs(p);
+        buckets.set(t.pair, row);
+      });
+      rows = [...buckets.entries()].sort((a, b) => b[1].pnl - a[1].pnl);
+    }
     if (!rows.length) return `<p class="mute">No closed trades yet.</p>`;
-    const line = (title, list) => `<h3>${title}</h3>` + list.map(([pair, row]) => {
+    return `<h3>Tất cả cặp · ${rows.length}</h3>` + rows.map(([pair, row]) => {
       const pf = row.gl ? row.gp / row.gl : row.gp ? Infinity : 0;
       return `<button type="button" class="bot" data-act="pick-pair" data-id="${esc(pair)}" style="width:100%;text-align:left"><b>${esc(pair)}</b> <span class="${cls(row.pnl)}">${money(row.pnl)}</span><div class="mute">${row.n} trades · PF ${Number.isFinite(pf) ? pf.toFixed(2) : "∞"}</div></button>`;
     }).join("");
-    return line("Best", rows.slice(0, 8)) + line("Worst", rows.slice().reverse().slice(0, 8));
   }
   function pairLabel(pair) {
     const text = String(pair || "");
@@ -480,14 +499,19 @@
     };
     const openSorted = [...open].sort((a, b) => profitAbs(a) - profitAbs(b));
     const closedSorted = [...closed].sort((a, b) => String(b.close_date || "").localeCompare(String(a.close_date || "")));
+    const totalClosed = (tradeStats() && tradeStats().trades) || closed.length;
     return `<h2>Open (${open.length})</h2>${openSorted.length ? openSorted.slice(0, 40).map((t) => row(t, true)).join("") : `<p class="mute">No open trades.</p>`}
-      <h2>Closed (${closed.length})</h2>${closedSorted.length ? closedSorted.slice(0, 40).map((t) => row(t, false)).join("") : `<p class="mute">No closed trades.</p>`}`;
+      <h2>Closed (${closedSorted.length} / ${totalClosed})</h2>${closedSorted.length ? closedSorted.slice(0, 40).map((t) => row(t, false)).join("") : `<p class="mute">No closed trades.</p>`}`;
   }
-  function drawEquity(closed) {
+  function drawEquity(closed, stats) {
     const svg = $("equity");
     const note = $("equity-note");
     if (!svg || !note) return;
-    const { pts, maxDd } = curve(closed);
+    const full = stats && Array.isArray(stats.equity) ? stats.equity : null;
+    const curved = full ? null : curve(closed);
+    const pts = full || curved.pts;
+    const maxDd = full ? Number(stats.max_dd) || 0 : curved.maxDd;
+    const count = full ? Number(stats.trades) || pts.length : pts.length;
     if (pts.length < 2) { svg.hidden = true; note.textContent = ""; return; }
     const min = Math.min(0, ...pts);
     const max = Math.max(0, ...pts);
@@ -495,7 +519,7 @@
     const points = pts.map((v, i) => ((i / (pts.length - 1)) * 280).toFixed(1) + "," + (70 - ((v - min) / span) * 64).toFixed(1)).join(" ");
     svg.hidden = false;
     svg.innerHTML = `<polyline fill="none" stroke="#8b7cf6" stroke-width="2" points="${points}"/>`;
-    note.textContent = "Closed equity · max DD " + money(-maxDd);
+    note.textContent = "Closed equity · " + count + " trades · max DD " + money(-maxDd);
   }
 
   let chart, series, indSeries;
